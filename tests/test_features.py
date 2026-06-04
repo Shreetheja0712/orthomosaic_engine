@@ -7,6 +7,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.features.matcher import match_features
 from src.features.neighbors import build_neighbor_pairs
+from src.features.rgb_only import load_rgb_captures
 from src.ingestion.capture import Capture
 
 WORK_DIR = Path(__file__).parent / "_work" / "features"
@@ -125,3 +126,19 @@ def test_match_features_uses_filtered_pairs(monkeypatch):
         "000.jpg 001.jpg",
         "001.jpg 002.jpg",
     ]
+
+
+def test_load_rgb_captures_skips_ingestion(monkeypatch):
+    rgb_dir = WORK_DIR / "rgb_only"
+    rgb_dir.mkdir(parents=True, exist_ok=True)
+    image_path = rgb_dir / "IMG_0001_123_RGB.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff")
+
+    monkeypatch.setattr("src.features.rgb_only.read_gps", lambda path: (16.9, 81.7, 120.0))
+
+    captures = load_rgb_captures(str(rgb_dir))
+
+    assert len(captures) == 1
+    assert captures[0].capture_id == "123"
+    assert captures[0].rgb == str(image_path)
+    assert captures[0].latitude == 16.9

@@ -1,6 +1,7 @@
 from .extractor import extract_features, extract_features_cli_fallback
 from .matcher import match_features, match_features_cli_fallback
 from .neighbors import build_neighbor_pairs
+from .rgb_only import gps_summary, load_rgb_captures
 
 
 def run_feature_pipeline(
@@ -48,4 +49,6 @@ __all__ = [
     "match_features",
     "match_features_cli_fallback",
     "build_neighbor_pairs",
+    "load_rgb_captures",
+    "gps_summary",
 ]
