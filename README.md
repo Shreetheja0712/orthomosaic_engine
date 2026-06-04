@@ -19,14 +19,19 @@ This engine is designed to focus exclusively on agricultural workflows, making a
 pip install -r requirements.txt
 ```
 
+PyCOLMAP is installed on supported Python versions through `requirements.txt`.
+On Python 3.14, use the COLMAP CLI fallback by installing the `colmap` binary
+separately and making sure it is available on `PATH`.
+
 ## Testing
 
 ```bash
-pytest
+python -m pytest
 ```
 
 ## Project Structure
 
 - `src/ingestion/`: Handles image loading, EXIF reading, and capture grouping.
+- `src/features/`: Handles RGB feature extraction and GPS-filtered matching.
 - `src/processing/`: (Planned) Core geometry and reconstruction pipeline.
 - `tests/`: Unit and integration tests.

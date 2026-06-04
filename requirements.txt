@@ -1,2 +1,3 @@
-ExifRead
-pytest
+ExifRead>=3.0.0
+pycolmap>=4.0.4; python_version < "3.14"
+pytest>=9.0.0

@@ -48,6 +48,10 @@ coverage.xml
 .stats
 .hypothesis/
 .pytest_cache/
+.pytest_tmp/
+pytest-cache-files-*/
+tests/tmp_pytest/
+tests/_work/
 cover/
 
 # Translations
@@ -156,3 +160,5 @@ cython_debug/
 *.tif
 data/
 output/
+
+plan.md

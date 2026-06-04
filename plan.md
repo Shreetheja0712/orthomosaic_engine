@@ -306,3 +306,92 @@ The engine should become the foundation for all downstream analytics including:
 * Vegetation health assessment
 * Yield prediction
 * Future disease detection models
+
+
+Your Engine (target)
+
+Feature Extraction : COLMAP SiftGPU       → matches Metashape quality
+Camera Mode        : SINGLE               → matches Metashape behavior  
+GPS Filtering      : your custom code     → faster than both Metashape and ODM
+Matching           : COLMAP GPU FLANN     → matches Metashape quality
+Verification       : COLMAP RANSAC        → matches Metashape quality
+
+
+ODM (CPU SIFT)        : ~45-60 minutes
+COLMAP (GPU SiftGPU)  : ~4-6 minutes
+Metashape (GPU)       : ~3-5 minutes
+
+
+
+  Feature Extraction
+Metashape
+  Algorithm  : proprietary SIFT variant
+  GPU        : yes, CUDA
+  Camera     : shared calibration across mission (same as COLMAP SINGLE mode)
+  Descriptor : 128-dim, RootSIFT normalized
+  Extra      : adaptive feature count based on image content
+  Speed      : fastest, highly optimized proprietary code
+
+COLMAP
+  Algorithm  : SiftGPU + RootSIFT + domain size pooling
+  GPU        : yes, CUDA
+  Camera     : SINGLE mode = shared calibration (matches Metashape behavior)
+  Descriptor : 128-dim, RootSIFT normalized
+  Extra      : domain size pooling for repetitive textures
+  Speed      : very fast, 10-20x over CPU
+
+ODM
+  Algorithm  : VLFeat SIFT (CPU only)
+  GPU        : no
+  Camera     : estimates per image by default
+  Descriptor : 128-dim standard SIFT
+  Extra      : nothing special
+  Speed      : slowest of the three
+
+Feature Matching
+Metashape
+  Method     : proprietary ANN + guided matching
+  GPU        : yes
+  Pairs      : adaptive, image similarity based
+  Verification: RANSAC
+  Speed      : fastest
+
+COLMAP
+  Method     : FLANN on GPU + guided matching + RANSAC
+  GPU        : yes
+  Pairs      : exhaustive / sequential / vocab tree / custom
+  Verification: RANSAC built in
+  Speed      : very fast
+
+ODM
+  Method     : FLANN CPU
+  GPU        : no
+  Pairs      : bow (bag of words) based filtering
+  Verification: RANSAC
+  Speed      : slow
+
+Quality difference in plain terms
+Metashape
+  → Best quality, proprietary optimizations, paid software
+  → Gold standard for professionals
+
+COLMAP
+  → 95% of Metashape quality
+  → Free, open source
+  → What academic researchers use to benchmark against Metashape
+  → Difference is negligible for agricultural flat fields
+
+ODM
+  → 80-85% of Metashape quality
+  → CPU only feature extraction
+  → Much slower
+  → Good enough for basic orthomosaics, not optimized
+
+What this means for your engine
+Your Engine (target)
+
+Feature Extraction : COLMAP SiftGPU       → matches Metashape quality
+Camera Mode        : SINGLE               → matches Metashape behavior  
+GPS Filtering      : your custom code     → faster than both Metashape and ODM
+Matching           : COLMAP GPU FLANN     → matches Metashape quality
+Verification       : COLMAP RANSAC        → matches Metashape quality
