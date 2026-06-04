@@ -73,6 +73,11 @@ def extract_features(
     if hasattr(pycolmap, "FeatureExtractionOptions"):
         extraction_options = pycolmap.FeatureExtractionOptions()
         extraction_options.use_gpu = use_gpu
+        # Prevent CUDA out-of-memory by limiting threads and max image size on GPU
+        if use_gpu:
+            extraction_options.num_threads = 1
+            extraction_options.max_image_size = 3200 # downscale very large drone images for GPU
+
         extraction_options.sift.max_num_features = max_keypoints
         if hasattr(pycolmap, "Normalization"):
             extraction_options.sift.normalization = pycolmap.Normalization.L1_ROOT
@@ -94,6 +99,12 @@ def extract_features(
         sift_options = pycolmap.SiftExtractionOptions()
         sift_options.use_gpu = use_gpu
         sift_options.max_num_features = max_keypoints
+        if use_gpu:
+            if hasattr(sift_options, "max_image_size"):
+                sift_options.max_image_size = 3200
+            if hasattr(sift_options, "num_threads"):
+                sift_options.num_threads = 1
+                
         if hasattr(pycolmap, "Normalization"):
             sift_options.normalization = pycolmap.Normalization.L1_ROOT
 
