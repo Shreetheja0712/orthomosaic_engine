@@ -1,161 +1,198 @@
-import os
-import shutil
-import subprocess
+"""
+Stage 3 — Feature Extraction
+Tool : ALIKED (aliked-n16-rot) via the lightglue package
+Output: one .h5 file per image written to <output_dir>/features/<capture_id>.h5
+
+Each .h5 file contains:
+    keypoints   float32 (N, 2)   pixel coordinates  [x, y]
+    descriptors float32 (N, 256) ALIKED descriptors
+    image_size  int32   (2,)     [width, height]
+
+Images are processed one at a time — zero OOM risk at 900 images on 16 GB VRAM.
+"""
+
+from __future__ import annotations
+
+import time
 from pathlib import Path
-from typing import List
+from typing import List, Optional
+
+import h5py
+import numpy as np
+import torch
 
 from ..ingestion.capture import Capture
 
+# ── ALIKED model name used throughout the pipeline ──────────────────────────
+ALIKED_MODEL = "aliked-n16rot"
 
-def _check_pycolmap():
+# Max keypoints per image.  8192 is a good default for nadir drone imagery.
+# More keypoints → slower LightGlue matching; fewer → weaker SfM.
+DEFAULT_MAX_KEYPOINTS = 8192
+
+
+# ── internal helpers ─────────────────────────────────────────────────────────
+
+def _check_lightglue():
     try:
-        import pycolmap
-        return pycolmap
+        from lightglue import ALIKED
+        return ALIKED
     except ImportError as exc:
         raise ImportError(
-            "pycolmap not installed. Run: pip install pycolmap\n"
-            "Or use run_feature_pipeline(..., use_cli_fallback=True) with COLMAP on PATH."
+            "lightglue not installed.\n"
+            "Run:  pip install lightglue\n"
+            "Docs: https://github.com/cvg/LightGlue"
         ) from exc
 
 
-def _prepare_rgb_image_dir(captures: List[Capture], database_path: str) -> tuple[Path, Path]:
-    db_path = Path(database_path)
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-
-    image_dir = db_path.parent / "rgb_images"
-    if image_dir.exists():
-        shutil.rmtree(image_dir)
-    image_dir.mkdir(parents=True)
-
-    for cap in captures:
-        if not cap.rgb:
-            raise ValueError(f"Capture {cap.capture_id} has no RGB image.")
-
-        ext = Path(cap.rgb).suffix
-        dest = image_dir / f"{cap.capture_id}{ext}"
-        try:
-            os.symlink(os.path.abspath(cap.rgb), dest)
-        except (OSError, NotImplementedError):
-            shutil.copy2(cap.rgb, dest)
-
-    return db_path, image_dir
+def _build_device(use_gpu: bool) -> torch.device:
+    if use_gpu and torch.cuda.is_available():
+        dev = torch.device("cuda")
+        vram_gb = torch.cuda.get_device_properties(0).total_memory / 1e9
+        print(f"[extractor] GPU: {torch.cuda.get_device_name(0)}  VRAM: {vram_gb:.1f} GB")
+    else:
+        if use_gpu and not torch.cuda.is_available():
+            print("[extractor] Warning: CUDA not available — falling back to CPU.")
+        dev = torch.device("cpu")
+    return dev
 
 
-def _pycolmap_device(pycolmap, use_gpu: bool):
-    if not hasattr(pycolmap, "Device"):
-        return None
-    return pycolmap.Device.auto if use_gpu else pycolmap.Device.cpu
+def _load_image_tensor(
+    image_path: str,
+    device: torch.device,
+    resize: Optional[int],
+) -> tuple[torch.Tensor, tuple[int, int]]:
+    """
+    Load an image as a (1, C, H, W) float32 tensor in [0, 1].
+    Returns (tensor, (width, height)) of the ORIGINAL image before any resize.
 
+    lightglue's ALIKED extractor accepts either:
+        - a plain (C, H, W) tensor  — we pass this
+        - a dict with 'image' key   — not needed here
+
+    Resize is applied when the image is very large to save GPU memory.
+    For 12 MP drone images a resize cap of 1600 px keeps VRAM under 2 GB.
+    None = no resize (use when image is already reasonably small).
+    """
+    from lightglue.utils import load_image
+
+    # load_image returns a (3, H, W) float32 tensor in [0, 1]
+    img: torch.Tensor = load_image(image_path, resize=resize).to(device)
+    # original width/height before any resize (for COLMAP camera model)
+    import PIL.Image
+    with PIL.Image.open(image_path) as pil:
+        orig_w, orig_h = pil.size
+    return img, (orig_w, orig_h)
+
+
+def _save_features(
+    h5_path: Path,
+    keypoints: np.ndarray,    # (N, 2) float32
+    descriptors: np.ndarray,  # (N, 256) float32
+    image_size: tuple[int, int],  # (width, height)  — ORIGINAL resolution
+) -> None:
+    h5_path.parent.mkdir(parents=True, exist_ok=True)
+    with h5py.File(h5_path, "w") as f:
+        f.create_dataset("keypoints",   data=keypoints,   dtype="float32")
+        f.create_dataset("descriptors", data=descriptors, dtype="float32")
+        f.create_dataset("image_size",  data=np.array(list(image_size), dtype="int32"))
+
+
+# ── public API ───────────────────────────────────────────────────────────────
 
 def extract_features(
     captures: List[Capture],
-    database_path: str,
+    output_dir: str,
     use_gpu: bool = True,
-    max_keypoints: int = 8192,
-    max_image_size: int = 3200,  # <-- Added safeguard for 4GB VRAM
-    camera_model: str = "OPENCV",
-) -> str:
+    max_keypoints: int = DEFAULT_MAX_KEYPOINTS,
+    resize: Optional[int] = 1600,
+) -> Path:
     """
-    Extract SIFT features from all RGB images using COLMAP/PyCOLMAP.
+    Run ALIKED feature extraction on all RGB images in `captures`.
 
-    The mission is imported in SINGLE camera mode so all RGB captures share one
-    calibration, which is the expected setup for one fixed drone camera.
+    Images are processed ONE AT A TIME.  GPU memory is released after each
+    image — no OOM risk regardless of mission size.
+
+    Args:
+        captures       : Capture list from ingestion.load_mission()
+        output_dir     : root output folder (features/ sub-dir created inside)
+        use_gpu        : use CUDA when available
+        max_keypoints  : max keypoints per image (default 8192)
+        resize         : cap longest image dimension to this many pixels before
+                         extraction.  None = no resize.  1600 is safe for 16 GB VRAM.
+
+    Returns:
+        Path to features/ directory containing one .h5 per capture.
     """
-    pycolmap = _check_pycolmap()
-    db_path, image_dir = _prepare_rgb_image_dir(captures, database_path)
+    ALIKED = _check_lightglue()
+    device = _build_device(use_gpu)
 
+    features_dir = Path(output_dir) / "features"
+    features_dir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[extractor] Model: {ALIKED_MODEL}  |  max_keypoints: {max_keypoints}")
     print(f"[extractor] Extracting features from {len(captures)} RGB images...")
-    print(f"[extractor] GPU: {use_gpu} | Camera model: {camera_model} | Max keypoints: {max_keypoints} | Max image size: {max_image_size}")
-    print("[extractor] SINGLE camera mode ON - shared calibration across all captures")
+    print(f"[extractor] Output: {features_dir}")
 
-    reader_options = pycolmap.ImageReaderOptions()
-    reader_options.camera_model = camera_model
+    # Build extractor once — reused for every image
+    extractor = (
+        ALIKED(model=ALIKED_MODEL, max_num_keypoints=max_keypoints)
+        .eval()
+        .to(device)
+    )
 
-    if hasattr(pycolmap, "FeatureExtractionOptions"):
-        extraction_options = pycolmap.FeatureExtractionOptions()
-        extraction_options.use_gpu = use_gpu
-        # Prevent CUDA out-of-memory by limiting threads and max image size on GPU
-        if use_gpu:
-            extraction_options.num_threads = 1
-            extraction_options.max_image_size = 3200 # downscale very large drone images for GPU
+    t0 = time.perf_counter()
+    skipped = 0
 
-        extraction_options.sift.max_num_features = max_keypoints
-        extraction_options.sift.max_image_size = max_image_size  # Limit resolution to prevent OOM
-        if hasattr(pycolmap, "Normalization"):
-            extraction_options.sift.normalization = pycolmap.Normalization.L1_ROOT
+    for idx, cap in enumerate(captures):
+        h5_path = features_dir / f"{cap.capture_id}.h5"
 
-        kwargs = {
-            "database_path": str(db_path),
-            "image_path": str(image_dir),
-            "camera_mode": pycolmap.CameraMode.SINGLE,
-            "reader_options": reader_options,
-            "extraction_options": extraction_options,
-        }
+        if h5_path.exists():
+            # Already extracted in a previous (interrupted) run — skip.
+            skipped += 1
+            continue
 
-        device = _pycolmap_device(pycolmap, use_gpu)
-        if device is not None:
-            kwargs["device"] = device
+        if not cap.rgb:
+            print(f"[extractor] Warning: capture {cap.capture_id} has no RGB — skipping.")
+            skipped += 1
+            continue
 
-        pycolmap.extract_features(**kwargs)
-    else:
-        sift_options = pycolmap.SiftExtractionOptions()
-        sift_options.use_gpu = use_gpu
-        sift_options.max_num_features = max_keypoints
-        if use_gpu:
-            if hasattr(sift_options, "max_image_size"):
-                sift_options.max_image_size = 3200
-            if hasattr(sift_options, "num_threads"):
-                sift_options.num_threads = 1
-                
-        if hasattr(pycolmap, "Normalization"):
-            sift_options.normalization = pycolmap.Normalization.L1_ROOT
+        img_tensor, (orig_w, orig_h) = _load_image_tensor(cap.rgb, device, resize)
 
-        reader_options.single_camera = True
-        pycolmap.extract_features(
-            database_path=str(db_path),
-            image_path=str(image_dir),
-            image_options=reader_options,
-            sift_options=sift_options,
-        )
+        with torch.no_grad():
+            # extractor returns dict with keys:
+            #   'keypoints'   : (1, N, 2) float  — pixel coords in resized space
+            #   'descriptors' : (1, N, D) float
+            #   'keypoint_scores' : (1, N) float  (confidence per kp)
+            result = extractor.extract(img_tensor)
 
-    print(f"[extractor] Feature extraction complete. Database: {db_path}")
-    return str(db_path)
+        kpts = result["keypoints"][0].cpu().numpy()        # (N, 2)
+        desc = result["descriptors"][0].cpu().numpy()      # (N, 256)
+
+        # Scale keypoints back to original image resolution if resize was applied
+        if resize is not None:
+            _, h_resized, w_resized = img_tensor.shape
+            scale_x = orig_w / w_resized
+            scale_y = orig_h / h_resized
+            kpts[:, 0] *= scale_x
+            kpts[:, 1] *= scale_y
+
+        _save_features(h5_path, kpts, desc, (orig_w, orig_h))
+
+        if (idx + 1) % 50 == 0 or (idx + 1) == len(captures):
+            elapsed = time.perf_counter() - t0
+            print(f"[extractor] {idx + 1}/{len(captures)}  "
+                  f"({elapsed:.1f}s)  last: {cap.capture_id}  kpts: {len(kpts)}")
+
+    elapsed = time.perf_counter() - t0
+    extracted = len(captures) - skipped
+    print(f"[extractor] Done. Extracted: {extracted}  Skipped: {skipped}  "
+          f"Time: {elapsed:.1f}s  ({elapsed / max(extracted, 1):.2f}s/image)")
+
+    return features_dir
 
 
-def extract_features_cli_fallback(
-    captures: List[Capture],
-    database_path: str,
-    colmap_bin: str = "colmap",
-    use_gpu: bool = True,
-    max_keypoints: int = 8192,
-) -> str:
-    """
-    CLI fallback for environments where PyCOLMAP is unavailable.
-    """
-    db_path, image_dir = _prepare_rgb_image_dir(captures, database_path)
-
-    print(f"[extractor_cli] Extracting features from {len(captures)} images via COLMAP CLI...")
-
-    cmd = [
-        colmap_bin,
-        "feature_extractor",
-        "--database_path",
-        str(db_path),
-        "--image_path",
-        str(image_dir),
-        "--ImageReader.camera_model",
-        "OPENCV",
-        "--ImageReader.single_camera",
-        "1",
-        "--SiftExtraction.use_gpu",
-        "1" if use_gpu else "0",
-        "--SiftExtraction.max_num_features",
-        str(max_keypoints),
-    ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"COLMAP feature extraction failed:\n{result.stderr}")
-
-    print(f"[extractor_cli] Done. Database: {db_path}")
-    return str(db_path)
+def features_exist(output_dir: str, captures: List[Capture]) -> bool:
+    """Return True if every capture already has a .h5 feature file."""
+    features_dir = Path(output_dir) / "features"
+    return all((features_dir / f"{cap.capture_id}.h5").exists() for cap in captures)

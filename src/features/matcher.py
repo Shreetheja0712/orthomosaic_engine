@@ -1,159 +1,231 @@
-import subprocess
+"""
+Stage 4 — Feature Matching
+Tool : LightGlue (transformer matcher, ETH Zurich)
+Input : .h5 feature files from extractor.py
+        GPS-filtered pairs from neighbors.py
+Output: <output_dir>/matches.h5
+
+matches.h5 layout:
+    /<capture_id_a>/<capture_id_b>/matches0   int32  (M, 2)
+        matches0[:, 0] = keypoint index in image A
+        matches0[:, 1] = keypoint index in image B
+
+Only pairs that pass LightGlue's internal confidence filter are written.
+Pairs with zero matches are silently skipped.
+
+LightGlue already performs geometric filtering internally — no separate RANSAC
+is needed at this stage.  COLMAP RANSAC runs in Stage 5 (db_importer) when the
+matches are imported into the COLMAP database.
+"""
+
+from __future__ import annotations
+
+import time
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
+
+import h5py
+import numpy as np
+import torch
 
 from ..ingestion.capture import Capture
 from .neighbors import build_neighbor_pairs
 
 
-def _check_pycolmap():
+# ── internal helpers ─────────────────────────────────────────────────────────
+
+def _check_lightglue():
     try:
-        import pycolmap
-        return pycolmap
+        from lightglue import LightGlue
+        return LightGlue
     except ImportError as exc:
-        raise ImportError("pycolmap not installed. Run: pip install pycolmap") from exc
+        raise ImportError(
+            "lightglue not installed.\n"
+            "Run:  pip install lightglue"
+        ) from exc
 
 
-def _pycolmap_device(pycolmap, use_gpu: bool):
-    if not hasattr(pycolmap, "Device"):
+def _build_device(use_gpu: bool) -> torch.device:
+    if use_gpu and torch.cuda.is_available():
+        return torch.device("cuda")
+    if use_gpu and not torch.cuda.is_available():
+        print("[matcher] Warning: CUDA not available — falling back to CPU.")
+    return torch.device("cpu")
+
+
+def _load_features(h5_path: Path, device: torch.device) -> Optional[dict]:
+    """
+    Load ALIKED features from .h5 file.
+    Returns None if file is missing (capture was skipped at extraction).
+
+    Returns dict with:
+        keypoints   : (1, N, 2) float32 tensor
+        descriptors : (1, N, 256) float32 tensor
+        image_size  : (width, height) int tuple
+    """
+    if not h5_path.exists():
         return None
-    return pycolmap.Device.auto if use_gpu else pycolmap.Device.cpu
+    with h5py.File(h5_path, "r") as f:
+        kpts = torch.from_numpy(f["keypoints"][:]).float().unsqueeze(0).to(device)   # (1, N, 2)
+        desc = torch.from_numpy(f["descriptors"][:]).float().unsqueeze(0).to(device) # (1, N, D)
+        w, h = f["image_size"][:]
+    return {"keypoints": kpts, "descriptors": desc, "image_size": (int(w), int(h))}
 
 
-def _pycolmap_matching_options(pycolmap):
-    if hasattr(pycolmap, "FeatureMatchingOptions"):
-        return pycolmap.FeatureMatchingOptions()
-    if hasattr(pycolmap, "SiftMatchingOptions"):
-        return pycolmap.SiftMatchingOptions()
-    return None
+def _normalise_keypoints(
+    kpts: torch.Tensor,   # (1, N, 2)  pixel coords
+    image_size: Tuple[int, int],  # (width, height)
+) -> torch.Tensor:
+    """
+    LightGlue expects keypoints normalised to [-1, 1] by image dimensions.
+    kpts[:, :, 0] = x  (width  axis)
+    kpts[:, :, 1] = y  (height axis)
+    """
+    w, h = image_size
+    scale = torch.tensor([w, h], dtype=kpts.dtype, device=kpts.device)
+    return (kpts / (scale / 2.0)) - 1.0
 
 
-def _pycolmap_verification_options(pycolmap):
-    if hasattr(pycolmap, "TwoViewGeometryOptions"):
-        return pycolmap.TwoViewGeometryOptions()
-    return None
+def _append_matches(
+    matches_h5: h5py.File,
+    id_a: str,
+    id_b: str,
+    matches: np.ndarray,  # (M, 2)
+) -> None:
+    """Write match indices into matches.h5 under group /<id_a>/<id_b>/."""
+    grp = matches_h5.require_group(id_a)
+    if id_b in grp:
+        del grp[id_b]   # overwrite if re-running
+    sub = grp.create_group(id_b)
+    sub.create_dataset("matches0", data=matches, dtype="int32")
 
+
+# ── public API ───────────────────────────────────────────────────────────────
 
 def match_features(
     captures: List[Capture],
-    database_path: str,
+    output_dir: str,
     n_neighbors: int = 8,
     use_gpu: bool = True,
-) -> str:
+) -> Path:
     """
-    Match features between GPS-filtered image pairs only.
+    Match ALIKED features between GPS-filtered image pairs using LightGlue.
 
-    The generated pair file is passed directly to COLMAP/PyCOLMAP, so this stage
-    avoids exhaustive matching and keeps the pair count near O(n * n_neighbors).
+    Reads .h5 feature files written by extract_features().
+    Writes matches to <output_dir>/matches.h5.
+
+    Args:
+        captures    : Capture list from ingestion (same order as extraction)
+        output_dir  : same root dir passed to extract_features()
+        n_neighbors : GPS neighbors per image  (default 8, use 12 for >80% overlap)
+        use_gpu     : use CUDA when available
+
+    Returns:
+        Path to matches.h5
     """
-    pycolmap = _check_pycolmap()
+    LightGlue = _check_lightglue()
+    device = _build_device(use_gpu)
 
-    if not hasattr(pycolmap, "match_image_pairs"):
-        raise RuntimeError(
-            "This pipeline requires pycolmap.match_image_pairs for GPS-filtered matching. "
-            "Install pycolmap >= 4.0 or call run_feature_pipeline(..., use_cli_fallback=True)."
+    features_dir = Path(output_dir) / "features"
+    matches_path = Path(output_dir) / "matches.h5"
+
+    if not features_dir.exists():
+        raise FileNotFoundError(
+            f"Features directory not found: {features_dir}\n"
+            "Run extract_features() first."
         )
 
-    db_path = Path(database_path)
-    if not db_path.exists():
-        raise FileNotFoundError(f"Database not found: {db_path}. Run extract_features first.")
-
+    # GPS-filtered pairs — the key reduction: 810k → ~7200
     pairs = build_neighbor_pairs(captures, n_neighbors=n_neighbors)
-    pairs_file = db_path.parent / "match_pairs.txt"
-    _write_pairs_file(captures, pairs, pairs_file)
-
     print(f"[matcher] Matching {len(pairs)} GPS-filtered pairs (GPU: {use_gpu})...")
 
-    pairing_options = pycolmap.ImportedPairingOptions()
-    pairing_options.match_list_path = str(pairs_file)
+    # Build matcher once — reused for all pairs
+    matcher = (
+        LightGlue(features="aliked")
+        .eval()
+        .to(device)
+    )
+    # Flash attention if available (PyTorch 2.x)
+    if hasattr(matcher, "compile"):
+        pass  # left to user to enable torch.compile() on top if desired
 
-    kwargs = {
-        "database_path": str(db_path),
-        "pairing_options": pairing_options,
-    }
+    # Cache loaded features — each capture appears in multiple pairs
+    feature_cache: dict[str, Optional[dict]] = {}
 
-    matching_options = _pycolmap_matching_options(pycolmap)
-    if matching_options is not None:
-        if hasattr(matching_options, "use_gpu"):
-            matching_options.use_gpu = use_gpu
-        kwargs["matching_options"] = matching_options
+    def get_features(capture_id: str) -> Optional[dict]:
+        if capture_id not in feature_cache:
+            h5_path = features_dir / f"{capture_id}.h5"
+            feature_cache[capture_id] = _load_features(h5_path, device)
+        return feature_cache[capture_id]
 
-    verification_options = _pycolmap_verification_options(pycolmap)
-    if verification_options is not None:
-        kwargs["verification_options"] = verification_options
+    t0 = time.perf_counter()
+    total_matches = 0
+    matched_pairs = 0
+    skipped_pairs = 0
 
-    device = _pycolmap_device(pycolmap, use_gpu)
-    if device is not None:
-        kwargs["device"] = device
+    with h5py.File(matches_path, "w") as matches_h5:
+        for idx, (id_a, id_b) in enumerate(pairs):
+            feats_a = get_features(id_a)
+            feats_b = get_features(id_b)
 
-    pycolmap.match_image_pairs(**kwargs)
+            if feats_a is None or feats_b is None:
+                skipped_pairs += 1
+                continue
 
-    print("[matcher] Matching and geometric verification complete.")
-    return str(db_path)
+            # Normalise to [-1, 1] as required by LightGlue
+            kpts_a = _normalise_keypoints(feats_a["keypoints"], feats_a["image_size"])
+            kpts_b = _normalise_keypoints(feats_b["keypoints"], feats_b["image_size"])
 
+            input_dict = {
+                "image0": {
+                    "keypoints":   kpts_a,
+                    "descriptors": feats_a["descriptors"],
+                    "image_size":  torch.tensor(
+                        [feats_a["image_size"]], dtype=torch.long, device=device
+                    ),
+                },
+                "image1": {
+                    "keypoints":   kpts_b,
+                    "descriptors": feats_b["descriptors"],
+                    "image_size":  torch.tensor(
+                        [feats_b["image_size"]], dtype=torch.long, device=device
+                    ),
+                },
+            }
 
-def match_features_cli_fallback(
-    captures: List[Capture],
-    database_path: str,
-    n_neighbors: int = 8,
-    colmap_bin: str = "colmap",
-    use_gpu: bool = True,
-) -> str:
-    """
-    CLI fallback for Windows or environments without a compatible pycolmap.
-    """
-    db_path = Path(database_path)
-    if not db_path.exists():
-        raise FileNotFoundError(f"Database not found: {db_path}. Run extract_features first.")
+            with torch.no_grad():
+                result = matcher(input_dict)
 
-    pairs = build_neighbor_pairs(captures, n_neighbors=n_neighbors)
-    pairs_file = db_path.parent / "match_pairs.txt"
-    _write_pairs_file(captures, pairs, pairs_file)
+            # matches0: (1, N) — for each kp in image0, index of matched kp in image1
+            #           -1 = unmatched
+            matches0 = result["matches0"][0].cpu().numpy()  # (N,)
 
-    print(f"[matcher_cli] Matching {len(pairs)} GPS-filtered pairs via COLMAP CLI...")
+            valid = matches0 >= 0
+            if valid.sum() == 0:
+                skipped_pairs += 1
+                continue
 
-    cmd = [
-        colmap_bin,
-        "matches_importer",
-        "--database_path",
-        str(db_path),
-        "--match_list_path",
-        str(pairs_file),
-        "--match_type",
-        "pairs",
-        "--SiftMatching.use_gpu",
-        "1" if use_gpu else "0",
-    ]
+            # Build (M, 2) index array  [ kp_idx_in_A,  kp_idx_in_B ]
+            kp_indices_a = np.where(valid)[0].astype("int32")
+            kp_indices_b = matches0[valid].astype("int32")
+            match_array = np.stack([kp_indices_a, kp_indices_b], axis=1)  # (M, 2)
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        raise RuntimeError(f"COLMAP pair matching failed:\n{result.stderr}")
+            _append_matches(matches_h5, id_a, id_b, match_array)
+            total_matches += len(match_array)
+            matched_pairs += 1
 
-    print("[matcher_cli] Matching and geometric verification complete.")
-    return str(db_path)
+            if (idx + 1) % 500 == 0 or (idx + 1) == len(pairs):
+                elapsed = time.perf_counter() - t0
+                print(f"[matcher] {idx + 1}/{len(pairs)}  "
+                      f"({elapsed:.1f}s)  matches so far: {total_matches}")
 
+    elapsed = time.perf_counter() - t0
+    print(f"[matcher] Done.")
+    print(f"[matcher] Pairs matched  : {matched_pairs}")
+    print(f"[matcher] Pairs skipped  : {skipped_pairs}  (missing features or zero inliers)")
+    print(f"[matcher] Total matches  : {total_matches}")
+    print(f"[matcher] Time           : {elapsed:.1f}s  "
+          f"({elapsed / max(matched_pairs, 1):.3f}s/pair)")
+    print(f"[matcher] Output         : {matches_path}")
 
-def _write_pairs_file(
-    captures: List[Capture],
-    pairs: List[Tuple[str, str]],
-    output_path: Path,
-) -> None:
-    """
-    Write pairs file in COLMAP format:
-    Each line: image_a_filename image_b_filename
-    """
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    id_to_filename = {}
-    for cap in captures:
-        ext = Path(cap.rgb).suffix
-        id_to_filename[cap.capture_id] = f"{cap.capture_id}{ext}"
-
-    written = 0
-    with open(output_path, "w", encoding="utf-8") as f:
-        for id_a, id_b in pairs:
-            if id_a in id_to_filename and id_b in id_to_filename:
-                f.write(f"{id_to_filename[id_a]} {id_to_filename[id_b]}\n")
-                written += 1
-
-    print(f"[matcher] Wrote {written} pairs to {output_path}")
+    return matches_path
