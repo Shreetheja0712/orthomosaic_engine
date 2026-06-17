@@ -61,11 +61,14 @@ def main() -> int:
     database_path = output_dir / "database.db"
     use_gpu = not args.cpu
 
+    start_total = time.perf_counter()
+
     captures = load_rgb_captures(args.rgb_dir)
     with_gps, without_gps = gps_summary(captures)
 
     print(f"[benchmark] RGB images: {len(captures)}")
     print(f"[benchmark] With GPS: {with_gps} | Without GPS: {without_gps}")
+    print(f"[benchmark] GPU Acceleration Enabled: {use_gpu}")
 
     if args.check_gps_only:
         for cap in captures:
@@ -117,8 +120,11 @@ def main() -> int:
         matching_seconds = time.perf_counter() - start
         print(f"[benchmark] Matching time: {matching_seconds:.2f}s")
 
-    total_seconds = extraction_seconds + (matching_seconds or 0.0)
-    print(f"[benchmark] Total feature-stage time: {total_seconds:.2f}s")
+    total_seconds_components = extraction_seconds + (matching_seconds or 0.0)
+    total_pipeline_seconds = time.perf_counter() - start_total
+    
+    print(f"[benchmark] Extraction + Matching time sum: {total_seconds_components:.2f}s")
+    print(f"[benchmark] Total feature-stage pipeline time: {total_pipeline_seconds:.2f}s")
     _print_database_summary(database_path)
 
     print("\n[benchmark] Outputs")
