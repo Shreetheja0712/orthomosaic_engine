@@ -52,6 +52,7 @@ def extract_features(
     database_path: str,
     use_gpu: bool = True,
     max_keypoints: int = 8192,
+    max_image_size: int = 3200,  # <-- Added safeguard for 4GB VRAM
     camera_model: str = "OPENCV",
 ) -> str:
     """
@@ -64,7 +65,7 @@ def extract_features(
     db_path, image_dir = _prepare_rgb_image_dir(captures, database_path)
 
     print(f"[extractor] Extracting features from {len(captures)} RGB images...")
-    print(f"[extractor] GPU: {use_gpu} | Camera model: {camera_model} | Max keypoints: {max_keypoints}")
+    print(f"[extractor] GPU: {use_gpu} | Camera model: {camera_model} | Max keypoints: {max_keypoints} | Max image size: {max_image_size}")
     print("[extractor] SINGLE camera mode ON - shared calibration across all captures")
 
     reader_options = pycolmap.ImageReaderOptions()
@@ -74,6 +75,7 @@ def extract_features(
         extraction_options = pycolmap.FeatureExtractionOptions()
         extraction_options.use_gpu = use_gpu
         extraction_options.sift.max_num_features = max_keypoints
+        extraction_options.sift.max_image_size = max_image_size  # Limit resolution to prevent OOM
         if hasattr(pycolmap, "Normalization"):
             extraction_options.sift.normalization = pycolmap.Normalization.L1_ROOT
 
@@ -94,6 +96,7 @@ def extract_features(
         sift_options = pycolmap.SiftExtractionOptions()
         sift_options.use_gpu = use_gpu
         sift_options.max_num_features = max_keypoints
+        sift_options.max_image_size = max_image_size  # Limit resolution to prevent OOM
         if hasattr(pycolmap, "Normalization"):
             sift_options.normalization = pycolmap.Normalization.L1_ROOT
 

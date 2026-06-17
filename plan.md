@@ -396,3 +396,93 @@ Camera Mode        : SINGLE               → matches Metashape behavior
 GPS Filtering      : your custom code     → faster than both Metashape and ODM
 Matching           : COLMAP GPU FLANN     → matches Metashape quality
 Verification       : COLMAP RANSAC        → matches Metashape quality
+
+
+
+
+
+
+
+STAGE BY STAGE  -  OPTIONS AND BEST CHOICE
+
+1. Ingestion
+What it does : parse filenames, group by capture ID, read GPS from EXIF, validate completeness
+Input        : raw image folders
+Output       : structured capture list with GPS
+Options      : custom code only  (no library needed)
+Our choice   : custom  (already built)
+
+2. Feature Extraction
+What it does : find distinctive keypoints in each image and compute a descriptor for each
+Input        : RGB images
+Output       : keypoints + 128-dim descriptors per image
+Options      : SIFT (OpenCV)  |  SIFT (VLFeat)  |  COLMAP SiftGPU  |  SuperPoint  |  ALIKED  |  DISK  |  DeDoDe
+Our choice   : ALIKED  (GPU, learned, best on repetitive crop textures, memory controlled)
+
+3. Feature Matching
+What it does : match descriptors between overlapping image pairs, filter false matches
+Input        : descriptors + GPS-filtered image pairs
+Output       : verified tie points between pairs
+Options      : FLANN + RANSAC  |  SuperGlue  |  LightGlue  |  LoFTR
+Our choice   : LightGlue  (GPU, transformer-based, built-in geometry verification, fast on easy pairs)
+
+4. SfM Mapping
+What it does : compute exact 3D position and orientation of every camera from matches
+Input        : verified matches (.db)
+Output       : camera poses + sparse 3D point cloud
+Options      : COLMAP  |  OpenMVG  |  Theia  |  glomap
+Our choice   : COLMAP incremental mapper  (most robust, best documented, GPS prior support)
+
+5. Georeferencing
+What it does : align the reconstructed model to real-world GPS coordinates
+Input        : sparse model + GPS from EXIF
+Output       : model in UTM / WGS84 coordinate system
+Options      : COLMAP model_aligner  |  custom GPS alignment  |  GCP-based (ground control points)
+Our choice   : COLMAP model_aligner with RTK GPS priors  (RTK GPS is accurate enough, no GCPs needed)
+
+6. Depth Maps
+What it does : estimate per-pixel depth for each image using neighboring views
+Input        : camera poses + RGB images
+Output       : per-image depth map
+Options      : OpenMVS  |  COLMAP stereo  |  custom SGM
+Our choice   : OpenMVS  (faster than COLMAP stereo, GPU accelerated, well maintained)
+
+7. DSM Generation
+What it does : fuse all depth maps into a single elevation grid over the field
+Input        : depth maps
+Output       : dsm.tif
+Options      : OpenMVS fusion  |  PDAL  |  custom rasterization with numpy + scipy
+Our choice   : OpenMVS fusion for dense cloud then GDAL rasterize to GeoTIFF
+
+8. Orthorectification
+What it does : project each image onto the DSM ground plane to remove perspective distortion
+Input        : DSM + images + camera poses
+Output       : flat georeferenced image tiles
+Options      : GDAL warp  |  custom ray casting  |  OpenDroneMap ortho module
+Our choice   : GDAL warp with RPC model  (standard, fast, battle tested)
+
+9. Mosaicking
+What it does : stitch all orthorectified tiles into one seamless orthomosaic
+Input        : orthorectified RGB tiles + all band tiles (reuse same geometry)
+Output       : rgb_orthomosaic.tif  +  multispectral_orthomosaic.tif
+Options      : GDAL merge  |  custom blending  |  OpenCV seamless clone
+Our choice   : GDAL merge with feathering blending  (georeferenced output, standard format)
+
+10. Indices
+What it does : compute vegetation indices from multispectral bands
+Input        : multispectral_orthomosaic.tif
+Output       : ndvi.tif  ndre.tif
+Options      : numpy  |  rasterio  |  custom
+Formula NDVI : (NIR - RED) / (NIR + RED)
+Formula NDRE : (NIR - REG) / (NIR + REG)
+Our choice   : numpy + rasterio  (trivial, no library needed beyond these)
+
+
+KEY OPTIMIZATIONS IN OUR ENGINE
+
+1.  GPS neighbor filtering         900x900 pairs reduced to ~7200 pairs before matching
+2.  Single camera mode             fixed drone = shared calibration = skip per-image estimation
+3.  RGB-only geometry              compute DSM once, reuse same geometry for all 5 bands
+4.  No mesh generation             skip dense point cloud export entirely
+5.  Flat terrain assumption        simpler DSM, no complex surface reconstruction needed
+6.  ALIKED not SIFT               handles repetitive crop texture better than classical SIFT

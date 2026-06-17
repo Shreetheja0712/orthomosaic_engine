@@ -15,6 +15,6 @@ Because your current environment is Python 3.14 on Windows, this uses the COLMAP
 
 After the run, outputs are here:
 
-output/feature_benchmark/database.db
+output/feature_benchmark/database.dbfeat
 output/feature_benchmark/rgb_images/
 output/feature_benchmark/match_pairs.
