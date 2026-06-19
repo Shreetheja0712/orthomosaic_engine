@@ -4,9 +4,11 @@ from typing import List, Tuple
 from ..ingestion.capture import Capture
 
 
-def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     Calculate ground distance in meters between two GPS coordinates.
+    Public — reused by src.sfm.keyframes for flight-path ordering and
+    GPS-guided init pair selection.
     """
     earth_radius_m = 6371000
     phi1 = math.radians(lat1)
@@ -16,6 +18,10 @@ def _haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> f
 
     a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2) ** 2
     return earth_radius_m * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+# Backwards-compatible alias (was private; some internal callers used this name)
+_haversine_distance = haversine_distance
 
 
 def build_neighbor_pairs(

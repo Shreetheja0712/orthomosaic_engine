@@ -123,6 +123,7 @@ def verify_matches_poselib(
         dict with verification stats (pairs_verified, pairs_rejected, total_inliers)
     """
     poselib = _check_poselib()
+    import pycolmap as _pycolmap
     opts = {**DEFAULT_RANSAC_OPTIONS, **(ransac_options or {})}
 
     conn = sqlite3.connect(str(db_path))
@@ -177,15 +178,17 @@ def verify_matches_poselib(
     print(f"[geometric_verification] PoseLib verifying {len(pair_rows)} pairs "
           f"(max_epipolar_error={opts['max_epipolar_error']}px)...")
 
-    MAX_IMAGES = 2 ** 20
     t0 = time.perf_counter()
     pairs_verified = 0
     pairs_rejected = 0
     total_inliers = 0
 
     for pair_id, n_matches, cols, data in pair_rows:
-        image_id_a = pair_id // MAX_IMAGES
-        image_id_b = pair_id % MAX_IMAGES
+        # pair_id_to_image_pair is the version-correct inverse of whatever
+        # encoding pycolmap.Database.write_matches() used to produce pair_id
+        # in the first place — re-deriving the formula by hand is fragile
+        # across COLMAP versions (the encoding constant has changed before).
+        image_id_a, image_id_b = _pycolmap.pair_id_to_image_pair(pair_id)
 
         if image_id_a not in image_camera or image_id_b not in image_camera:
             pairs_rejected += 1
