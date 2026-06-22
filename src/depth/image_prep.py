@@ -1,0 +1,322 @@
+"""
+image_prep.py
+=============
+Prepare the OpenMVS workspace for depth map estimation.
+
+OpenMVS EstimateDepthmaps requires:
+  1. A flat directory of image files whose filenames match the names
+     stored in the COLMAP database (e.g. "000.jpg", "001.jpg", …).
+  2. A .mvs scene file that embeds camera poses, intrinsics, and image
+     paths — produced by the InterfaceCOLMAP tool (the COLMAP-to-OpenMVS
+     bridge binary that ships with OpenMVS).
+
+What this module does
+---------------------
+1. Create ``<output_dir>/images/`` and symlink (or copy on Windows)
+   each keyframe RGB image with its canonical name (``<capture_id>.jpg``).
+2. Run ``InterfaceCOLMAP`` to convert the COLMAP sparse reconstruction
+   and image directory into a .mvs scene file.
+3. Return the path to the .mvs file for use by openmvs_runner.py.
+
+Depth range injection
+---------------------
+Per-image depth ranges (from depth_range.py) are passed to OpenMVS via
+the ``--min-depth`` / ``--max-depth`` flags **per image** when calling
+DensifyPointCloud, not by patching the .mvs file directly.  The .mvs
+binary format (MVArchive) is not designed for external patching, so we
+pass them as CLI arguments in openmvs_runner.py instead.
+
+Usage
+-----
+    from src.depth.image_prep import prepare_openmvs_workspace
+
+    mvs_path = prepare_openmvs_workspace(
+        reconstruction=recon,
+        captures=captures,
+        output_dir="/data/mission_001/depth",
+    )
+    # returns "/data/mission_001/depth/scene.mvs"
+"""
+
+from __future__ import annotations
+
+import logging
+import os
+import shutil
+import subprocess
+from pathlib import Path
+from typing import List, Optional
+
+logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def prepare_openmvs_workspace(
+    reconstruction,
+    captures: List,
+    output_dir: str,
+    colmap_sparse_dir: Optional[str] = None,
+    openmvs_bin_dir: str = "",
+) -> str:
+    """
+    Set up the OpenMVS workspace and produce the .mvs scene file.
+
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+        The georeferenced sparse reconstruction from Stage 6/7.
+    captures : List[Capture]
+        Capture list from ingestion. Used to resolve the original RGB
+        file paths.
+    output_dir : str
+        Root output directory for Stage 8 (e.g. "outputs/depth/").
+        Will be created if it does not exist.
+    colmap_sparse_dir : str, optional
+        Path to the directory containing the COLMAP binary model files
+        (cameras.bin, images.bin, points3D.bin).  If None, the
+        reconstruction is exported to a temporary subdirectory first.
+    openmvs_bin_dir : str
+        Directory containing OpenMVS binaries.  Empty string = search
+        PATH and common install locations.
+
+    Returns
+    -------
+    str
+        Absolute path to the produced ``scene.mvs`` file.
+
+    Raises
+    ------
+    RuntimeError
+        If InterfaceCOLMAP binary cannot be found or the conversion
+        fails.
+    """
+    output_path = Path(output_dir).resolve()
+    output_path.mkdir(parents=True, exist_ok=True)
+
+    image_dir = output_path / "images"
+    image_dir.mkdir(exist_ok=True)
+
+    # ------------------------------------------------------------------ #
+    # 1. Symlink (or copy) keyframe images into the flat images/ directory
+    # ------------------------------------------------------------------ #
+    capture_map = {c.capture_id: c for c in captures}
+    linked = 0
+
+    for image_id, image in reconstruction.images.items():
+        # image.name is the canonical name (e.g. "000.jpg") set during
+        # ingestion.  Strip extension to get capture_id.
+        stem = Path(image.name).stem  # e.g. "000"
+        capture_id = stem
+
+        if capture_id not in capture_map:
+            logger.warning(
+                "Image '%s' in reconstruction has no matching Capture "
+                "(capture_id='%s'). Skipping.",
+                image.name,
+                capture_id,
+            )
+            continue
+
+        src = Path(capture_map[capture_id].rgb).resolve()
+        dst = image_dir / image.name
+
+        if dst.exists():
+            continue  # already linked / copied
+
+        _symlink_or_copy(str(src), str(dst))
+        linked += 1
+
+    logger.info("Linked %d keyframe images to %s", linked, image_dir)
+
+    # ------------------------------------------------------------------ #
+    # 2. Export COLMAP reconstruction to binary model files (if needed)
+    # ------------------------------------------------------------------ #
+    if colmap_sparse_dir is None:
+        sparse_dir = output_path / "sparse"
+        sparse_dir.mkdir(exist_ok=True)
+        colmap_sparse_dir = str(sparse_dir)
+        _export_reconstruction_to_colmap_bin(reconstruction, str(sparse_dir))
+        logger.info("Exported COLMAP sparse model to %s", sparse_dir)
+
+    # ------------------------------------------------------------------ #
+    # 3. Run InterfaceCOLMAP to produce the .mvs scene file
+    # ------------------------------------------------------------------ #
+    mvs_scene_path = str(output_path / "scene.mvs")
+
+    _run_interface_colmap(
+        colmap_sparse_dir=colmap_sparse_dir,
+        image_dir=str(image_dir),
+        output_mvs=mvs_scene_path,
+        bin_dir=openmvs_bin_dir,
+    )
+
+    logger.info("OpenMVS scene file written to %s", mvs_scene_path)
+    return mvs_scene_path
+
+
+# ---------------------------------------------------------------------------
+# Private helpers
+# ---------------------------------------------------------------------------
+
+def _symlink_or_copy(src: str, dst: str) -> None:
+    """
+    Create a symbolic link at *dst* pointing to *src*.
+
+    Falls back to ``shutil.copy2`` on Windows (where symlinks require
+    elevated privileges) or if symlink creation fails for any reason.
+
+    Parameters
+    ----------
+    src : str
+        Absolute source path (the original RGB image).
+    dst : str
+        Absolute destination path inside the workspace images/ directory.
+    """
+    try:
+        os.symlink(src, dst)
+    except (OSError, NotImplementedError):
+        # Windows, or filesystem that doesn't support symlinks
+        logger.debug(
+            "Symlink failed for '%s' → '%s', falling back to copy.", src, dst
+        )
+        shutil.copy2(src, dst)
+
+
+def _export_reconstruction_to_colmap_bin(reconstruction, sparse_dir: str) -> None:
+    """
+    Write COLMAP binary model files from a pycolmap.Reconstruction.
+
+    Writes cameras.bin, images.bin, and points3D.bin to *sparse_dir*.
+    These are needed by InterfaceCOLMAP.
+
+    Parameters
+    ----------
+    reconstruction : pycolmap.Reconstruction
+    sparse_dir : str
+        Target directory (must already exist).
+    """
+    # pycolmap.Reconstruction.write() writes the three .bin files
+    reconstruction.write(sparse_dir)
+    logger.debug("Wrote cameras.bin / images.bin / points3D.bin to %s", sparse_dir)
+
+
+def _run_interface_colmap(
+    colmap_sparse_dir: str,
+    image_dir: str,
+    output_mvs: str,
+    bin_dir: str = "",
+) -> None:
+    """
+    Call the ``InterfaceCOLMAP`` OpenMVS binary to convert a COLMAP
+    sparse model into a .mvs scene file.
+
+    InterfaceCOLMAP is the official COLMAP → OpenMVS bridge and ships
+    with every standard OpenMVS build.
+
+    Parameters
+    ----------
+    colmap_sparse_dir : str
+        Directory containing cameras.bin / images.bin / points3D.bin.
+    image_dir : str
+        Directory containing the flat image files.
+    output_mvs : str
+        Destination path for the output .mvs file.
+    bin_dir : str
+        Directory containing OpenMVS binaries (empty = search PATH).
+
+    Raises
+    ------
+    RuntimeError
+        If the binary is not found or exits with a non-zero code.
+    """
+    binary = _find_openmvs_binary("InterfaceCOLMAP", bin_dir)
+
+    cmd = [
+        binary,
+        "--input-file", colmap_sparse_dir,
+        "--image-folder", image_dir,
+        "--output-file", output_mvs,
+    ]
+
+    logger.info("Running: %s", " ".join(cmd))
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(
+            f"InterfaceCOLMAP failed (exit {result.returncode}).\n"
+            f"stdout:\n{result.stdout}\n"
+            f"stderr:\n{result.stderr}"
+        )
+
+    logger.debug("InterfaceCOLMAP stdout:\n%s", result.stdout)
+
+
+def _find_openmvs_binary(name: str, bin_dir: str = "") -> str:
+    """
+    Locate an OpenMVS binary by name.
+
+    Search order:
+      1. Explicit *bin_dir* if provided.
+      2. System PATH (``shutil.which``).
+      3. Common installation locations:
+           - ``/usr/local/bin/OpenMVS/``
+           - ``/opt/openmvs/bin/``
+           - ``~/OpenMVS/bin/``
+
+    Parameters
+    ----------
+    name : str
+        Binary name without extension (e.g. "InterfaceCOLMAP",
+        "DensifyPointCloud").
+    bin_dir : str
+        Explicit directory to check first.
+
+    Returns
+    -------
+    str
+        Absolute path to the binary.
+
+    Raises
+    ------
+    RuntimeError
+        If the binary cannot be found anywhere.
+    """
+    candidates: list[str] = []
+
+    if bin_dir:
+        candidates.append(str(Path(bin_dir) / name))
+
+    # PATH lookup
+    which_result = shutil.which(name)
+    if which_result:
+        return which_result
+
+    # Common install locations
+    common_dirs = [
+        "/usr/local/bin/OpenMVS",
+        "/usr/local/bin",
+        "/opt/openmvs/bin",
+        str(Path.home() / "OpenMVS" / "bin"),
+        str(Path.home() / "openMVS" / "bin"),
+    ]
+    candidates.extend(str(Path(d) / name) for d in common_dirs)
+
+    for candidate in candidates:
+        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+            logger.debug("Found OpenMVS binary: %s", candidate)
+            return candidate
+
+    raise RuntimeError(
+        f"OpenMVS binary '{name}' not found.\n"
+        f"Install OpenMVS: https://github.com/cdcseacave/openMVS\n"
+        f"  conda install -c conda-forge openmvs\n"
+        f"Or set openmvs_bin_dir to the directory containing '{name}'."
+    )
