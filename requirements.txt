@@ -6,7 +6,7 @@ Pillow>=10.0.0                 # PIL.Image — image loading utility used by Lig
 # --- Feature extraction & matching (Stage 3 & 4) ---
 torch>=2.2.0                   # ALIKED + LightGlue backbone (install CUDA build separately — see installations.md)
 torchvision>=0.17.0            # image loading utilities used by lightglue
-lightglue>=0.1.0               # ALIKED extractor + LightGlue matcher (ETH Zurich)
+lightglue @ git+https://github.com/cvg/LightGlue.git  # ALIKED extractor + LightGlue matcher (ETH Zurich)
 kornia>=0.7.3                  # image geometry utils required by lightglue
 h5py>=3.10.0                   # .h5 feature / match files written by extractor + matcher
 
