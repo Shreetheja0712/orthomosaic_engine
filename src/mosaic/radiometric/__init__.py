@@ -21,7 +21,7 @@ panel factor.
 from __future__ import annotations
 
 import logging
-from typing import Dict
+from typing import Dict, Optional
 
 import numpy as np
 
@@ -103,7 +103,7 @@ def calibrate_image(
 
 def build_panel_factors(
     panel_image_paths: Dict[str, str],
-    known_reflectances: Dict[str, float] = None,
+    known_reflectances: Optional[Dict[str, float]] = None,
 ) -> Dict[str, float]:
     """
     Convenience wrapper: detect the panel directly in known image paths

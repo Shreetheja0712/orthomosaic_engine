@@ -149,11 +149,19 @@ def match_features(
     if hasattr(matcher, "compile"):
         pass  # left to user to enable torch.compile() on top if desired
 
-    # Cache loaded features — each capture appears in multiple pairs
-    feature_cache: dict[str, Optional[dict]] = {}
+    # Cache loaded features — each capture appears in multiple pairs.
+    # Cap at _FEATURE_CACHE_LIMIT entries to avoid unbounded VRAM growth:
+    # at ~8 MB/capture, 64 entries ≈ 512 MB GPU memory.
+    _FEATURE_CACHE_LIMIT = 64
+    feature_cache: dict[str, Optional[dict]] = {}  # Python 3.7+ insertion-ordered
 
     def get_features(capture_id: str) -> Optional[dict]:
         if capture_id not in feature_cache:
+            if len(feature_cache) >= _FEATURE_CACHE_LIMIT:
+                # Evict the oldest entry (first key in insertion order).
+                # del drops the dict; Python ref-counting frees GPU tensors immediately.
+                oldest = next(iter(feature_cache))
+                del feature_cache[oldest]
             h5_path = features_dir / f"{capture_id}.h5"
             feature_cache[capture_id] = _load_features(h5_path, device)
         return feature_cache[capture_id]

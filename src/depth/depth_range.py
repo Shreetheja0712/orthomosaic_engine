@@ -42,6 +42,49 @@ if TYPE_CHECKING:
     # pycolmap.Reconstruction is only available at runtime
     pass
 
+
+# ---------------------------------------------------------------------------
+# pycolmap API compatibility helpers
+# ---------------------------------------------------------------------------
+# pycolmap 4.x moved rotation/translation into `image.cam_from_world`.
+# Older builds (and the legacy API) expose `image.rotmat()` / `image.tvec`.
+# These helpers try the modern API first and fall back gracefully.
+
+def _get_R(image) -> np.ndarray:
+    """Return the 3×3 world-to-camera rotation matrix for a pycolmap.Image."""
+    if hasattr(image, "cam_from_world"):
+        rot = image.cam_from_world.rotation
+        if hasattr(rot, "matrix"):
+            return np.asarray(rot.matrix(), dtype=np.float64)
+        # Some builds expose a quaternion (.quat is xyzw)
+        q = np.asarray(rot.quat, dtype=np.float64)
+        x, y, z, w = q
+        s = 2.0 / (x*x + y*y + z*z + w*w)
+        return np.array([
+            [1 - s*(y*y+z*z),  s*(x*y - z*w),   s*(x*z + y*w)],
+            [s*(x*y + z*w),    1 - s*(x*x+z*z),  s*(y*z - x*w)],
+            [s*(x*z - y*w),    s*(y*z + x*w),    1 - s*(x*x+y*y)],
+        ], dtype=np.float64)
+    # Legacy pycolmap: image.rotmat() returns a 3×3 list/array
+    if hasattr(image, "rotmat"):
+        return np.asarray(image.rotmat(), dtype=np.float64)
+    raise AttributeError(
+        f"Cannot extract rotation from pycolmap.Image of type {type(image)!r}. "
+        "Expected cam_from_world.rotation or rotmat()."
+    )
+
+
+def _get_t(image) -> np.ndarray:
+    """Return the (3,) world-to-camera translation vector for a pycolmap.Image."""
+    if hasattr(image, "cam_from_world"):
+        return np.asarray(image.cam_from_world.translation, dtype=np.float64)
+    if hasattr(image, "tvec"):
+        return np.asarray(image.tvec, dtype=np.float64)
+    raise AttributeError(
+        f"Cannot extract translation from pycolmap.Image of type {type(image)!r}. "
+        "Expected cam_from_world.translation or tvec."
+    )
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -247,8 +290,10 @@ def _collect_depths_for_image(image, reconstruction) -> list[float]:
     list[float]
         Positive depth values in metres. May be empty.
     """
-    R = image.rotmat()   # (3, 3) world-to-camera rotation
-    t = image.tvec       # (3,)   world-to-camera translation
+    # Use compat helpers — pycolmap 4.x removed .rotmat() and .tvec in favour
+    # of image.cam_from_world.rotation / .translation.
+    R = _get_R(image)   # (3, 3) world-to-camera rotation
+    t = _get_t(image)   # (3,)   world-to-camera translation
 
     depths: list[float] = []
 

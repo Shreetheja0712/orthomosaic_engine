@@ -127,6 +127,17 @@ def check_capture(capture: Capture) -> QualityResult:
     Order: corrupt → blur → GPS
     (corrupt must be first — other checks need readable image)
     """
+    # Guard: captures with no RGB path at all cannot be checked.
+    # This happens when ingestion found only multispectral files for a capture ID.
+    if not capture.rgb:
+        return QualityResult(
+            capture_id=capture.capture_id,
+            passed=False,
+            reason="no RGB image path — capture has no RGB file",
+            blur_score=None,
+            has_gps=False,
+        )
+
     rgb_path = capture.rgb
 
     # Check 1 — corrupt

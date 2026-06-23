@@ -251,26 +251,32 @@ def validate_glomap_reconstruction(
     if len(camera_points) >= 3:
         recon_area = _bbox_area_two_largest(aligned_camera_points)
         gps_area = _bbox_area_two_largest(gps_points)
-    else:
-        bbox_min, bbox_max = reconstruction.compute_bounding_box()
-        recon_area = _bbox_area_two_largest(np.vstack([bbox_min, bbox_max]))
-        gps_span_x, gps_span_y = _gps_field_span_m(keyframes)
-        gps_area = gps_span_x * gps_span_y
 
-    if gps_area > 0:
-        # Use the two larger dimensions (field is flat — Z span is small)
-        coverage = recon_area / gps_area
+        if gps_area > 0:
+            # Use the two larger dimensions (field is flat — Z span is small)
+            coverage = recon_area / gps_area
 
-        if coverage < min_bbox_coverage:
-            return False, (
-                f"Check 3 FAIL: reconstruction covers {coverage*100:.1f}% "
-                f"of expected field area (< {min_bbox_coverage*100:.1f}%). "
-                f"Possible folding detected."
-            )
-        print(f"[glomap_validate] Check 3 PASS: coverage {coverage*100:.1f}% "
-              f">= {min_bbox_coverage*100:.1f}%")
+            if coverage < min_bbox_coverage:
+                return False, (
+                    f"Check 3 FAIL: reconstruction covers {coverage*100:.1f}% "
+                    f"of expected field area (< {min_bbox_coverage*100:.1f}%). "
+                    f"Possible folding detected."
+                )
+            print(f"[glomap_validate] Check 3 PASS: coverage {coverage*100:.1f}% "
+                  f">= {min_bbox_coverage*100:.1f}%")
+        else:
+            print("[glomap_validate] Check 3 SKIP: GPS span too small to compare.")
     else:
-        print("[glomap_validate] Check 3 SKIP: GPS span too small to compare.")
+        # Fewer than 3 camera-GPS pairs means we cannot construct a meaningful
+        # bounding box in GPS space.  The COLMAP bounding box (in reconstruction
+        # frame) and the GPS span (in metres) use different coordinate origins
+        # and cannot be compared directly — doing so produces unreliable
+        # coverage ratios.  Skip the check rather than risk a false positive.
+        print(
+            f"[glomap_validate] Check 3 SKIP: only {len(camera_points)} camera-GPS "
+            "pair(s) available (need >= 3 for a reliable area comparison)."
+        )
+
 
     return True, ""
 

@@ -186,7 +186,9 @@ def import_to_colmap(
         ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
         name = f"{cap.capture_id}{ext}"
 
-        existing = db.read_image_with_name(name) if db.exists_image(name) else None
+        # read_image_with_name() returns None when the image does not exist yet.
+        # We avoid exists_image() because it is not present in all pycolmap 4.x builds.
+        existing = db.read_image_with_name(name)
         if existing is not None:
             cap_id_to_image_id[cap.capture_id] = existing.image_id
             continue
@@ -233,9 +235,21 @@ def import_to_colmap(
         db.write_keypoints(image_id, np.ascontiguousarray(kpts, dtype="float32"))
 
         desc_uint8 = _float32_descriptors_to_uint8(desc)
-        feature_descriptors = pycolmap.FeatureDescriptors(
-            pycolmap.FeatureExtractorType.ALIKED_N16ROT, desc_uint8
-        )
+
+        # pycolmap.FeatureExtractorType.ALIKED_N16ROT was added in a specific
+        # pycolmap release.  We probe for it at import time and fall back to
+        # CUSTOM (an always-present enum value) or a bare descriptor if needed.
+        _et = getattr(pycolmap, "FeatureExtractorType", None)
+        _aliked_type = (
+            getattr(_et, "ALIKED_N16ROT", None)
+            or getattr(_et, "CUSTOM", None)
+        ) if _et is not None else None
+
+        if _aliked_type is not None:
+            feature_descriptors = pycolmap.FeatureDescriptors(_aliked_type, desc_uint8)
+        else:
+            # Oldest pycolmap builds accept just the raw uint8 array.
+            feature_descriptors = pycolmap.FeatureDescriptors(desc_uint8)
         db.write_descriptors(image_id, feature_descriptors)
 
         kp_count_total += len(kpts)

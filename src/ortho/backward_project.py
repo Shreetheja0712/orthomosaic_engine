@@ -230,8 +230,21 @@ def backward_project_image(
         ortho_mask : np.ndarray  (H_out, W_out) bool — True = valid pixel
     """
     intr = pose.intrinsics
-    H_in = intr.height
-    W_in = intr.width
+
+    # Use actual image dimensions for boundary checks and bilinear sampling.
+    # Multispectral bands (e.g. Sequoia 1280×960) often differ from the RGB
+    # camera intrinsics (e.g. 4000×3000) stored in the reconstruction.  When
+    # they differ we scale fx/fy/cx/cy proportionally so the projection math
+    # stays correct.  For RGB images the scale factors are exactly 1.0.
+    H_in = raw_image.shape[0]
+    W_in = raw_image.shape[1]
+
+    scale_x = W_in / max(intr.width, 1)
+    scale_y = H_in / max(intr.height, 1)
+    fx = intr.fx * scale_x
+    fy = intr.fy * scale_y
+    cx = intr.cx * scale_x
+    cy = intr.cy * scale_y
 
     # Upload image to GPU
     image_gpu = xp.asarray(raw_image)
@@ -250,7 +263,7 @@ def backward_project_image(
     u_coords, v_coords, valid = _backward_project_kernel(
         X_grid, Y_grid, Z_grid,
         R_gpu, t_gpu,
-        intr.fx, intr.fy, intr.cx, intr.cy,
+        fx, fy, cx, cy,
         W_in, H_in,
     )
 

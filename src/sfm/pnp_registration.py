@@ -100,49 +100,55 @@ def register_non_keyframes(
 
     db = pycolmap.Database.open(str(database_path))
 
-    # Build name → image_id map from database
-    name_to_id = {
-        img.name: img.image_id
-        for img in db.read_all_images()
-    }
-    registered = 0
-    failed     = 0
+    try:
+        # Build name → image_id map from database
+        name_to_id = {
+            img.name: img.image_id
+            for img in db.read_all_images()
+        }
+        registered = 0
+        failed     = 0
 
-    print(f"[pnp] Registering {len(non_keyframes)} non-keyframes via PnP...")
+        print(f"[pnp] Registering {len(non_keyframes)} non-keyframes via PnP...")
 
-    for cap in non_keyframes:
-        ext  = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        name = f"{cap.capture_id}{ext}"
+        for cap in non_keyframes:
+            ext  = Path(cap.rgb).suffix if cap.rgb else ".jpg"
+            name = f"{cap.capture_id}{ext}"
 
-        image_id = name_to_id.get(name)
-        if image_id is None:
-            print(f"[pnp] Warning: no database row for {name} — skipping.")
-            failed += 1
-            continue
-
-        try:
-            result = _register_image_compat(
-                pycolmap,
-                reconstruction,
-                db,
-                database_path,
-                image_id,
-            )
-            if _registration_succeeded(result, reconstruction, image_id):
-                registered += 1
-            else:
+            image_id = name_to_id.get(name)
+            if image_id is None:
+                print(f"[pnp] Warning: no database row for {name} — skipping.")
                 failed += 1
-        except Exception as e:
-            print(f"[pnp] Warning: PnP failed for {cap.capture_id}: {e}")
-            failed += 1
+                continue
 
-    total = len(non_keyframes)
-    print(f"[pnp] Registered {registered}/{total} non-keyframes "
-          f"({registered/total*100:.1f}%)")
+            try:
+                result = _register_image_compat(
+                    pycolmap,
+                    reconstruction,
+                    db,
+                    database_path,
+                    image_id,
+                )
+                if _registration_succeeded(result, reconstruction, image_id):
+                    registered += 1
+                else:
+                    failed += 1
+            except Exception as e:
+                print(f"[pnp] Warning: PnP failed for {cap.capture_id}: {e}")
+                failed += 1
 
-    if failed > total * 0.20:
-        print(f"[pnp] Warning: {failed} non-keyframes failed PnP registration. "
-              f"Check feature matching quality or reduce keyframe interval.")
+        total = len(non_keyframes)
+        print(f"[pnp] Registered {registered}/{total} non-keyframes "
+              f"({registered/total*100:.1f}%)")
 
-    db.close()
+        if failed > total * 0.20:
+            print(f"[pnp] Warning: {failed} non-keyframes failed PnP registration. "
+                  f"Check feature matching quality or reduce keyframe interval.")
+
+    finally:
+        # Always close the DB — on Windows an unclosed handle locks the .db file
+        # and prevents every subsequent pipeline stage from opening it.
+        db.close()
+
     return registered
+

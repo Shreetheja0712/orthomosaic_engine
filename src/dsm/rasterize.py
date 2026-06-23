@@ -315,14 +315,37 @@ def rasterize_pointcloud(
         downstream orthomosaic target GSD, or orthorectification will
         show staircase artifacts (see dsm_stage_context.md).
     crs : output CRS string (e.g. "EPSG:4326" or a UTM zone EPSG code).
-        Note: the .ply XY coordinates must already be in this CRS's units
-        (i.e. fusion.py/OpenMVS must emit points in a projected or
-        consistent local frame). Assumed handled upstream.
+
+        IMPORTANT: the .ply XY coordinates must already be in this CRS's
+        units.  OpenMVS outputs points in whatever frame the .mvs scene
+        used (typically metric/ECEF after GPS alignment, NOT WGS84 degrees).
+        If you leave crs at the default "EPSG:4326" when the data is metric,
+        the DSM will have the correct elevation grid but an incorrect
+        geographic tag.  dsm_sampler.py will then attempt an ill-formed
+        reprojection.
+
+        Pass the actual UTM EPSG (e.g. "EPSG:32644") that matches the SfM
+        coordinate frame.  If unsure, check the output of
+        src.sfm.alignment.align_to_gps() — it logs the UTM zone used.
 
     Returns
     -------
     output_path
     """
+    import logging as _logging
+    _log = _logging.getLogger(__name__)
+
+    # Warn when the default CRS is used alongside a reconstruction — the caller
+    # almost certainly has the correct UTM zone available and should pass it.
+    if crs == "EPSG:4326" and reconstruction is not None:
+        _log.warning(
+            "rasterize_pointcloud: using default crs='EPSG:4326' but a "
+            "reconstruction was supplied.  The fused .ply is likely in a "
+            "metric coordinate frame (UTM/ECEF), not WGS84 degrees.  Pass "
+            "the correct UTM EPSG code via the `crs` argument to avoid a "
+            "misaligned DSM.  Example: crs='EPSG:32644' for UTM zone 44N."
+        )
+
     points = _read_ply_xyz(ply_path)
     grid, geotransform = _points_to_grid(points, target_gsd_m)
     _write_geotiff(grid, geotransform, crs, output_path)

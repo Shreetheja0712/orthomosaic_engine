@@ -263,19 +263,15 @@ def _find_openmvs_binary(name: str, bin_dir: str = "") -> str:
     """
     Locate an OpenMVS binary by name.
 
-    Search order:
-      1. Explicit *bin_dir* if provided.
+    Search order (fixed so explicit bin_dir always wins):
+      1. Explicit *bin_dir* if provided — checked FIRST.
       2. System PATH (``shutil.which``).
-      3. Common installation locations:
-           - ``/usr/local/bin/OpenMVS/``
-           - ``/opt/openmvs/bin/``
-           - ``~/OpenMVS/bin/``
+      3. Common installation locations.
 
     Parameters
     ----------
     name : str
-        Binary name without extension (e.g. "InterfaceCOLMAP",
-        "DensifyPointCloud").
+        Binary name without extension (e.g. ``"InterfaceCOLMAP"``).
     bin_dir : str
         Explicit directory to check first.
 
@@ -289,17 +285,26 @@ def _find_openmvs_binary(name: str, bin_dir: str = "") -> str:
     RuntimeError
         If the binary cannot be found anywhere.
     """
-    candidates: list[str] = []
-
+    # 1. Explicit bin_dir takes priority (was previously checked AFTER PATH — fixed).
     if bin_dir:
-        candidates.append(str(Path(bin_dir) / name))
+        candidate = Path(bin_dir) / name
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
+            logger.debug("Found OpenMVS binary via bin_dir: %s", candidate)
+            return str(candidate)
+        # bin_dir given but binary absent — warn and fall through rather than
+        # hard-failing so callers with a partially-populated bin_dir still work.
+        logger.warning(
+            "OpenMVS binary '%s' not found in explicit bin_dir '%s'; "
+            "falling back to PATH and common locations.",
+            name, bin_dir,
+        )
 
-    # PATH lookup
+    # 2. System PATH
     which_result = shutil.which(name)
     if which_result:
         return which_result
 
-    # Common install locations
+    # 3. Common install locations
     common_dirs = [
         "/usr/local/bin/OpenMVS",
         "/usr/local/bin",
@@ -307,12 +312,11 @@ def _find_openmvs_binary(name: str, bin_dir: str = "") -> str:
         str(Path.home() / "OpenMVS" / "bin"),
         str(Path.home() / "openMVS" / "bin"),
     ]
-    candidates.extend(str(Path(d) / name) for d in common_dirs)
-
-    for candidate in candidates:
-        if Path(candidate).is_file() and os.access(candidate, os.X_OK):
+    for d in common_dirs:
+        candidate = Path(d) / name
+        if candidate.is_file() and os.access(str(candidate), os.X_OK):
             logger.debug("Found OpenMVS binary: %s", candidate)
-            return candidate
+            return str(candidate)
 
     raise RuntimeError(
         f"OpenMVS binary '{name}' not found.\n"

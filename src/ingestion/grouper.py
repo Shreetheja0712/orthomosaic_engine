@@ -85,6 +85,15 @@ def group_captures(mission_dir: str) -> dict[str, Capture]:
 
         if capture_id not in captures:
             captures[capture_id] = Capture(capture_id=capture_id)
+            # Warn: this capture has no RGB image yet. GPS is only read from
+            # RGB images, so latitude/longitude will remain None for this
+            # capture, which will cause it to be rejected at the quality
+            # filter or keyframe selection stage.
+            print(
+                f"[grouper] Warning: capture '{capture_id}' found in multi/ "
+                f"but not in rgb/. GPS will be None (no RGB to read EXIF from). "
+                f"Ensure RGB file follows the naming convention IMG_<frame>_{capture_id}_RGB.<ext>."
+            )
 
         field = BAND_MAP[band]
         setattr(captures[capture_id], field, filepath)

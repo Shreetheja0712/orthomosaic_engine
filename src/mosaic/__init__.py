@@ -222,6 +222,15 @@ def run_ms_mosaic(
 
     stacked = stack_ms_bands(band_mosaics, band_order=_MS_BAND_ORDER)
 
+    # canvas is set during the first band's iteration.  If it is still None here
+    # every band produced an empty tile list — fail loudly rather than crashing
+    # inside rasterio with a confusing NoneType attribute error.
+    if canvas is None:
+        raise RuntimeError(
+            "run_ms_mosaic: canvas was never set — all MS bands produced empty tile lists. "
+            "Check that run_ortho_pipeline() wrote multispectral tiles before calling run_ms_mosaic()."
+        )
+
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with rasterio.open(
         output_path,

@@ -62,6 +62,27 @@ def _best_reconstruction(reconstructions: dict) -> Optional[object]:
     return max(reconstructions.values(), key=lambda r: r.num_reg_images)
 
 
+def _set_opt(obj, name: str, value) -> bool:
+    """
+    Safely set a pycolmap option attribute only if it exists.
+
+    pycolmap's IncrementalPipelineOptions (and sub-objects) occasionally rename
+    or add fields across minor releases.  Using setattr without checking first
+    would either raise AttributeError (hard crash) or silently create a new
+    Python-only attribute that COLMAP never reads (silent misconfiguration).
+    This helper avoids both failure modes.
+
+    Returns True if the attribute was found and set, False if it was skipped.
+    """
+    if not hasattr(obj, name):
+        return False
+    try:
+        setattr(obj, name, value)
+        return True
+    except Exception:
+        return False
+
+
 def _resolve_image_id(db, capture: Capture) -> Optional[int]:
     """
     Look up the COLMAP image_id for a Capture by its name convention.
@@ -113,19 +134,23 @@ def run_colmap_incremental(
     opt.image_names = image_names
 
     # Optimization 3 — BA frequency tuning (safe for flat terrain + clean matches)
-    opt.mapper.ba_local_num_images   = 12    # default 6
-    opt.ba_global_frames_ratio       = 1.3   # default 1.1
+    # ba_global_frames_ratio was renamed from ba_global_images_ratio in some builds;
+    # _set_opt silently skips the attribute if this pycolmap version doesn’t expose it.
+    _set_opt(opt.mapper, "ba_local_num_images", 12)   # default 6
+    _set_opt(opt, "ba_global_frames_ratio", 1.3)       # default 1.1
 
     # Optimization 4 — tight reprojection filter (safe with ALIKED+LightGlue)
-    opt.mapper.filter_max_reproj_error = 2.0  # default 4.0
+    _set_opt(opt.mapper, "filter_max_reproj_error", 2.0)  # default 4.0
 
     # Optimization 5 — all CPU cores
     opt.num_threads = -1
 
-    # GPS/RTK priors — activate prior position constraints
-    # pose_priors.py already wrote priors into the database
-    # this flag tells BA to actually use them during optimization
-    opt.use_prior_position = True
+    # GPS/RTK priors — activate prior position constraints.
+    # use_prior_position tells BA to use the pose priors injected by pose_priors.py.
+    # Use _set_opt: the attribute is absent in some pycolmap debug builds.
+    if not _set_opt(opt, "use_prior_position", True):
+        print("[colmap] Warning: use_prior_position not available in this pycolmap build; "
+              "GPS pose priors will not be enforced during incremental mapping.")
 
     # Optimization 2 — GPS-guided init pair
     if init_pair is not None:
@@ -146,10 +171,14 @@ def run_colmap_incremental(
 
     # ── Run mapper ────────────────────────────────────────────────────────────
     print(f"[colmap] Running incremental SfM on {len(keyframes)} keyframes...")
-    print(f"[colmap] Options: ba_local_num_images={opt.mapper.ba_local_num_images}, "
-          f"ba_global_frames_ratio={opt.ba_global_frames_ratio}, "
-          f"filter_max_reproj_error={opt.mapper.filter_max_reproj_error}, "
-          f"use_prior_position={opt.use_prior_position}")
+    ba_local  = getattr(getattr(opt, "mapper", opt), "ba_local_num_images", "(default)")
+    ba_global = getattr(opt, "ba_global_frames_ratio", "(default)")
+    reproj    = getattr(getattr(opt, "mapper", opt), "filter_max_reproj_error", "(default)")
+    use_prior = getattr(opt, "use_prior_position", "(default)")
+    print(f"[colmap] Options: ba_local_num_images={ba_local}, "
+          f"ba_global_frames_ratio={ba_global}, "
+          f"filter_max_reproj_error={reproj}, "
+          f"use_prior_position={use_prior}")
 
     try:
         reconstructions = pycolmap.incremental_mapping(
