@@ -30,6 +30,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 
+from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 
 
@@ -344,10 +345,7 @@ def run_glomap(
 
     # Build keyframe image name list for GLOMAP
     # GLOMAP processes only these images, not the full database
-    image_names = []
-    for cap in keyframes:
-        ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        image_names.append(f"{cap.capture_id}{ext}")
+    image_names = [colmap_image_name(cap) for cap in keyframes]
 
     print(f"[glomap] Running GLOMAP on {len(keyframes)} keyframes...")
 

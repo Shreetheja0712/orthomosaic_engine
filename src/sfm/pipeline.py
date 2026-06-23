@@ -143,6 +143,18 @@ def run_sfm(
         )
         if reconstruction is not None:
             path_used = "COLMAP"
+        elif len(keyframes) < len(captures):
+            print("[sfm] Keyframe-only COLMAP produced no reconstruction. "
+                  "Retrying COLMAP with all captures so the mapper can use the full match graph.")
+            reconstruction = run_colmap_incremental(
+                database_path = database_path,
+                image_dir     = image_dir,
+                output_dir    = str(output_path),
+                keyframes     = captures,
+                init_pair     = init_pair,
+            )
+            if reconstruction is not None:
+                path_used = "COLMAP-full"
 
     if reconstruction is None:
         print("[sfm] CRITICAL: Both GLOMAP and COLMAP produced no reconstruction. "

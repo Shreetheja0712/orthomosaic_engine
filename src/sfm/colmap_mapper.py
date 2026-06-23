@@ -50,9 +50,13 @@ API surface confirmed against pycolmap 4.0.4:
 
 from __future__ import annotations
 
+import os
+import shutil
+import sqlite3
 from pathlib import Path
 from typing import List, Optional, Tuple
 
+from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 
 
@@ -88,10 +92,115 @@ def _resolve_image_id(db, capture: Capture) -> Optional[int]:
     Look up the COLMAP image_id for a Capture by its name convention.
     db_importer names images as <capture_id><ext>.
     """
-    ext  = Path(capture.rgb).suffix if capture.rgb else ".jpg"
-    name = f"{capture.capture_id}{ext}"
+    name = colmap_image_name(capture)
     img  = db.read_image_with_name(name)
     return img.image_id if img is not None else None
+
+
+def _symlink_or_copy(src: Path, dst: Path) -> None:
+    if dst.exists():
+        return
+    try:
+        os.symlink(src, dst)
+    except (OSError, NotImplementedError):
+        shutil.copy2(src, dst)
+
+
+def _prepare_mapper_image_dir(keyframes: List[Capture], output_path: Path) -> Path:
+    """
+    Create a flat image directory whose filenames match the COLMAP DB names.
+
+    Mission RGB files can have names like IMG_..._RGB.JPG while the database
+    stores canonical names like 0000.jpg. COLMAP's mapper needs the on-disk
+    files to be addressable by those database names.
+    """
+    image_path = output_path / "images"
+    image_path.mkdir(parents=True, exist_ok=True)
+
+    linked = 0
+    missing = 0
+    for cap in keyframes:
+        if not cap.rgb:
+            missing += 1
+            continue
+
+        src = Path(cap.rgb)
+        if not src.exists():
+            missing += 1
+            continue
+
+        dst = image_path / colmap_image_name(cap)
+        if not dst.exists():
+            _symlink_or_copy(src, dst)
+            linked += 1
+
+    if linked:
+        print(f"[colmap] Prepared {linked} canonical image links in {image_path}")
+    if missing:
+        print(f"[colmap] Warning: {missing} keyframe RGB files were missing; "
+              "COLMAP may not be able to load those images.")
+
+    return image_path
+
+
+def _decode_pair_id(pair_id: int) -> Tuple[int, int]:
+    """
+    Decode COLMAP's order-independent pair_id into image IDs.
+    """
+    max_image_id = 2147483647
+    image_id2 = int(pair_id) % max_image_id
+    image_id1 = (int(pair_id) - image_id2) // max_image_id
+    return image_id1, image_id2
+
+
+def _verified_pair_stats(database_path: str, image_names: List[str]) -> Optional[dict]:
+    """
+    Summarize verified two-view geometry connectivity for a mapper image list.
+
+    COLMAP's mapper consumes the two_view_geometries table, not the raw matches
+    table. If keyframe filtering leaves no verified keyframe-to-keyframe edges,
+    incremental mapping will report "No images with matches".
+    """
+    db_path = Path(database_path)
+    if not db_path.exists():
+        return None
+
+    try:
+        conn = sqlite3.connect(str(db_path))
+        rows = conn.execute("SELECT image_id, name FROM images").fetchall()
+        wanted_names = set(image_names)
+        wanted_ids = {
+            int(image_id)
+            for image_id, name in rows
+            if name in wanted_names
+        }
+
+        if not wanted_ids:
+            conn.close()
+            return {
+                "images_in_db": 0,
+                "verified_pairs": 0,
+                "images_with_verified_matches": 0,
+            }
+
+        verified_pairs = 0
+        images_with_matches: set[int] = set()
+        for pair_id, n_rows in conn.execute("SELECT pair_id, rows FROM two_view_geometries"):
+            if int(n_rows or 0) <= 0:
+                continue
+            image_id1, image_id2 = _decode_pair_id(pair_id)
+            if image_id1 in wanted_ids and image_id2 in wanted_ids:
+                verified_pairs += 1
+                images_with_matches.update((image_id1, image_id2))
+
+        conn.close()
+        return {
+            "images_in_db": len(wanted_ids),
+            "verified_pairs": verified_pairs,
+            "images_with_verified_matches": len(images_with_matches),
+        }
+    except sqlite3.Error:
+        return None
 
 
 def run_colmap_incremental(
@@ -120,12 +229,19 @@ def run_colmap_incremental(
 
     output_path = Path(output_dir) / "colmap"
     output_path.mkdir(parents=True, exist_ok=True)
+    mapper_image_path = _prepare_mapper_image_dir(keyframes, output_path)
 
     # Build keyframe image name list
-    image_names = []
-    for cap in keyframes:
-        ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        image_names.append(f"{cap.capture_id}{ext}")
+    image_names = [colmap_image_name(cap) for cap in keyframes]
+    stats = _verified_pair_stats(database_path, image_names)
+    if stats is not None:
+        print("[colmap] Verified match graph: "
+              f"{stats['verified_pairs']} pairs across "
+              f"{stats['images_with_verified_matches']}/{len(image_names)} mapper images")
+        if stats["verified_pairs"] == 0:
+            print("[colmap] Warning: selected mapper images have no verified matches. "
+                  "Incremental mapping is unlikely to initialize.")
+            return None
 
     # ── Options ───────────────────────────────────────────────────────────────
     opt = pycolmap.IncrementalPipelineOptions()
@@ -183,7 +299,7 @@ def run_colmap_incremental(
     try:
         reconstructions = pycolmap.incremental_mapping(
             database_path = str(database_path),
-            image_path    = str(image_dir),
+            image_path    = str(mapper_image_path),
             output_path   = str(output_path),
             options       = opt,
         )

@@ -41,6 +41,7 @@ from typing import List, Optional
 
 import numpy as np
 
+from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 
 
@@ -184,8 +185,7 @@ def import_to_colmap(
     for cap in captures:
         # Image name = what the mapper will look for in the image folder.
         # We reuse <capture_id>.jpg  (same naming as the feature .h5 files).
-        ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        name = f"{cap.capture_id}{ext}".lower()
+        name = colmap_image_name(cap)
 
         # read_image_with_name() returns None when the image does not exist yet.
         # We avoid exists_image() because it is not present in all pycolmap 4.x builds.

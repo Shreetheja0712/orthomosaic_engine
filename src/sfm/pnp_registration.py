@@ -28,9 +28,9 @@ but does not break the reconstruction.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import List
 
+from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 
 
@@ -112,8 +112,7 @@ def register_non_keyframes(
         print(f"[pnp] Registering {len(non_keyframes)} non-keyframes via PnP...")
 
         for cap in non_keyframes:
-            ext  = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-            name = f"{cap.capture_id}{ext}"
+            name = colmap_image_name(cap)
 
             image_id = name_to_id.get(name)
             if image_id is None:
@@ -151,4 +150,3 @@ def register_non_keyframes(
         db.close()
 
     return registered
-

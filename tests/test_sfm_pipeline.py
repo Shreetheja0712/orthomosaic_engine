@@ -6,10 +6,13 @@ Tests the decision flow: RTK → GLOMAP → validate → fallback logic.
 
 import sys
 import os
+import sqlite3
+import types
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from src.ingestion.capture import Capture
+from src.colmap_images import colmap_image_name
 from src.sfm.keyframes import select_keyframes, find_gps_guided_init_pair
 
 
@@ -175,6 +178,131 @@ def test_run_sfm_writes_final_reconstruction_and_reports_fallback(tmp_path, monk
     assert result is recon
     assert recon.write_path == str(output_dir)
     assert "Path used  : COLMAP" in captured
+
+
+def test_run_sfm_retries_all_captures_when_keyframes_fail(tmp_path, monkeypatch, capsys):
+    """If keyframe-only mapping has no usable graph, retry on all captures."""
+    import src.sfm.pipeline as sfm_pipeline
+
+    class MockReconstruction:
+        def __init__(self):
+            self.num_reg_images = 6
+            self.points3D = {1: object(), 2: object()}
+
+        def write(self, path):
+            self.write_path = path
+
+    captures = make_grid_captures(2, 3)
+    recon = MockReconstruction()
+    mapper_sizes = []
+
+    def fake_run_colmap_incremental(*args, **kwargs):
+        mapper_sizes.append(len(kwargs["keyframes"]))
+        return None if len(mapper_sizes) == 1 else recon
+
+    monkeypatch.setattr(sfm_pipeline, "inject_gps_priors", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(sfm_pipeline, "run_colmap_incremental", fake_run_colmap_incremental)
+    monkeypatch.setattr(sfm_pipeline, "register_non_keyframes", lambda *args, **kwargs: 0)
+    monkeypatch.setattr(sfm_pipeline, "run_final_bundle_adjustment", lambda *args, **kwargs: None)
+    monkeypatch.setattr(sfm_pipeline, "align_to_gps", lambda *args, **kwargs: True)
+
+    result = sfm_pipeline.run_sfm(
+        database_path = str(tmp_path / "colmap.db"),
+        image_dir     = str(tmp_path / "rgb"),
+        output_dir    = str(tmp_path / "sparse"),
+        captures      = captures,
+        has_rtk       = False,
+    )
+
+    captured = capsys.readouterr().out
+    assert result is recon
+    assert mapper_sizes == [2, 6]
+    assert "Retrying COLMAP with all captures" in captured
+    assert "Path used  : COLMAP-full" in captured
+
+
+def test_colmap_verified_pair_stats_counts_mapper_graph(tmp_path):
+    """Mapper diagnostics should count only verified pairs inside the allowlist."""
+    from src.sfm.colmap_mapper import _verified_pair_stats
+
+    db_path = tmp_path / "database.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE two_view_geometries (pair_id INTEGER PRIMARY KEY, rows INTEGER)")
+    conn.executemany(
+        "INSERT INTO images (image_id, name) VALUES (?, ?)",
+        [(1, "000.jpg"), (2, "001.jpg"), (3, "002.jpg")],
+    )
+    max_image_id = 2147483647
+    conn.execute(
+        "INSERT INTO two_view_geometries (pair_id, rows) VALUES (?, ?)",
+        (1 * max_image_id + 2, 25),
+    )
+    conn.execute(
+        "INSERT INTO two_view_geometries (pair_id, rows) VALUES (?, ?)",
+        (2 * max_image_id + 3, 0),
+    )
+    conn.commit()
+    conn.close()
+
+    stats = _verified_pair_stats(str(db_path), ["000.jpg", "001.jpg", "002.jpg"])
+    assert stats == {
+        "images_in_db": 3,
+        "verified_pairs": 1,
+        "images_with_verified_matches": 2,
+    }
+
+
+def test_colmap_mapper_uses_canonical_lowercase_image_names(tmp_path, monkeypatch):
+    """
+    Regression guard for COLMAP reporting `loaded 0`: the mapper image allowlist
+    and staged image files must match db_importer's lowercased DB names.
+    """
+    import src.sfm.colmap_mapper as colmap_mapper
+
+    rgb_path = tmp_path / "IMG_260315_083045_0001_RGB.JPG"
+    rgb_path.write_bytes(b"fake image bytes")
+    cap = make_capture("0001", 16.900, 81.700)
+    cap.rgb = str(rgb_path)
+
+    calls = {}
+
+    class FakeOptions:
+        def __init__(self):
+            self.mapper = types.SimpleNamespace(
+                ba_local_num_images=6,
+                filter_max_reproj_error=4.0,
+            )
+            self.ba_global_frames_ratio = 1.1
+            self.use_prior_position = False
+            self.num_threads = 1
+            self.image_names = []
+
+    def fake_incremental_mapping(database_path, image_path, output_path, options):
+        calls["database_path"] = database_path
+        calls["image_path"] = image_path
+        calls["output_path"] = output_path
+        calls["image_names"] = list(options.image_names)
+        return {}
+
+    fake_pycolmap = types.SimpleNamespace(
+        IncrementalPipelineOptions=FakeOptions,
+        incremental_mapping=fake_incremental_mapping,
+    )
+    monkeypatch.setitem(sys.modules, "pycolmap", fake_pycolmap)
+
+    result = colmap_mapper.run_colmap_incremental(
+        database_path=str(tmp_path / "database.db"),
+        image_dir=str(tmp_path / "rgb"),
+        output_dir=str(tmp_path / "sparse"),
+        keyframes=[cap],
+        init_pair=None,
+    )
+
+    assert result is None
+    assert calls["image_names"] == [colmap_image_name(cap)]
+    assert calls["image_names"] == ["0001.jpg"]
+    assert (tmp_path / "sparse" / "colmap" / "images" / "0001.jpg").exists()
 
 
 if __name__ == "__main__":

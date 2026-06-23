@@ -31,11 +31,11 @@ weight is converted into covariance as:  covariance = I * (1 / weight)
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import List
 
 import numpy as np
 
+from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 
 RTK_PRIOR_WEIGHT = 1e6
@@ -84,7 +84,7 @@ def inject_gps_priors(
     db = pycolmap.Database.open(str(db_path))
 
     # Map image name -> Image (need camera_id + image_id to build corr_data_id),
-    # same naming convention as db_importer (<capture_id>.<original extension>)
+    # same canonical naming convention as db_importer
     name_to_image = {img.name: img for img in db.read_all_images()}
 
     written = 0
@@ -96,8 +96,7 @@ def inject_gps_priors(
             skipped_no_gps += 1
             continue
 
-        ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        name = f"{cap.capture_id}{ext}"
+        name = colmap_image_name(cap)
 
         image = name_to_image.get(name)
         if image is None:

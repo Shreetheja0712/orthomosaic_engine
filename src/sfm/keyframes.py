@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import List, Optional, Tuple
 
+from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 from ..features.neighbors import haversine_distance as _haversine_distance
 
@@ -132,10 +133,7 @@ def write_keyframe_list(keyframes: List[Capture], output_path: str) -> str:
     """
     from pathlib import Path
 
-    lines = []
-    for cap in keyframes:
-        ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        lines.append(f"{cap.capture_id}{ext}")
+    lines = [colmap_image_name(cap) for cap in keyframes]
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
