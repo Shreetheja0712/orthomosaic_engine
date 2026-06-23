@@ -15,7 +15,6 @@ Step 2: Pick the COLMAP initial image pair explicitly from GPS data instead
 
 from __future__ import annotations
 
-import math
 from typing import List, Optional, Tuple
 
 from ..ingestion.capture import Capture

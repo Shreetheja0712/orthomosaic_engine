@@ -1,6 +1,4 @@
 from .capture import Capture
-from .grouper import group_captures
-from .validator import validate_captures, ValidationError
 
 
 def load_mission(mission_dir: str, strict: bool = True) -> list[Capture]:
@@ -12,8 +10,21 @@ def load_mission(mission_dir: str, strict: bool = True) -> list[Capture]:
 
     Returns sorted list of complete Capture objects.
     """
+    from .grouper import group_captures
+    from .validator import validate_captures
+
     captures = group_captures(mission_dir)
     return validate_captures(captures, strict=strict)
+
+
+def __getattr__(name: str):
+    if name == "group_captures":
+        from .grouper import group_captures
+        return group_captures
+    if name in {"validate_captures", "ValidationError"}:
+        from .validator import ValidationError, validate_captures
+        return {"validate_captures": validate_captures, "ValidationError": ValidationError}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

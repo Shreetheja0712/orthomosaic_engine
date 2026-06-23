@@ -19,7 +19,6 @@ import numpy as np
 
 try:
     import rasterio
-    from rasterio.crs import CRS
 except ImportError as exc:  # pragma: no cover
     raise ImportError("rasterio is required for tile_writer") from exc
 

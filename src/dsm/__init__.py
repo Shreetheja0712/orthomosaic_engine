@@ -39,6 +39,7 @@ def run_dsm_pipeline(
     num_views_fuse: int = DEFAULT_NUM_VIEWS_FUSE,
     keep_pointcloud: bool = False,
     openmvs_bin_dir: str = "",
+    crs: str = "EPSG:4326",
 ) -> str:
     """
     Run the full Stage 9 DSM generation pipeline.
@@ -59,6 +60,10 @@ def run_dsm_pipeline(
     keep_pointcloud : if False (default), the intermediate fused .ply is
         deleted after dsm.tif is written.
     openmvs_bin_dir : optional explicit path to OpenMVS binaries.
+    crs : output CRS for the DSM GeoTIFF (e.g. "EPSG:32644" for UTM zone 44N).
+        Defaults to "EPSG:4326" which triggers auto-detection from the
+        reconstruction's GPS priors via rasterize_pointcloud(). Pass the
+        correct UTM EPSG explicitly when auto-detection is not possible.
 
     Returns
     -------
@@ -95,6 +100,7 @@ def run_dsm_pipeline(
         output_path=dsm_raw_path,
         reconstruction=reconstruction,
         target_gsd_m=target_gsd_m,
+        crs=crs,
     )
 
     # 3. Gap fill

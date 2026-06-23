@@ -6,8 +6,10 @@ geometry needed for the mosaic canvas: union bounding box, output raster
 size, and the Affine transform of the full mosaic.
 
 Only metadata is read here (transform / CRS / bounds / size). Pixel data is
-loaded lazily, one tile at a time, by load_tile_pixels() — never all tiles
-at once, since a mission has ~900 tiles.
+loaded lazily, one tile at a time, by load_tile_pixels(). NOTE: the caller
+(run_rgb_mosaic in mosaic/__init__.py) currently loads all tiles into memory
+before gain compensation and seam-finding. Chunked canvas processing is a
+planned improvement — see mosaicking.md §Memory.
 
 IMPORTANT — ordering guarantee:
     read_tile_infos() sorts tiles by geographic position (top-left first,

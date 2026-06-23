@@ -145,10 +145,6 @@ def match_features(
         .eval()
         .to(device)
     )
-    # Flash attention if available (PyTorch 2.x)
-    if hasattr(matcher, "compile"):
-        pass  # left to user to enable torch.compile() on top if desired
-
     # Cache loaded features — each capture appears in multiple pairs.
     # Cap at _FEATURE_CACHE_LIMIT entries to avoid unbounded VRAM growth:
     # at ~8 MB/capture, 64 entries ≈ 512 MB GPU memory.
@@ -228,7 +224,7 @@ def match_features(
                       f"({elapsed:.1f}s)  matches so far: {total_matches}")
 
     elapsed = time.perf_counter() - t0
-    print(f"[matcher] Done.")
+    print("[matcher] Done.")
     print(f"[matcher] Pairs matched  : {matched_pairs}")
     print(f"[matcher] Pairs skipped  : {skipped_pairs}  (missing features or zero inliers)")
     print(f"[matcher] Total matches  : {total_matches}")

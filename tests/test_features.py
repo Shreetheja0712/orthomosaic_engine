@@ -14,11 +14,12 @@ import types
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import h5py
 import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+h5py = pytest.importorskip("h5py")
 
 from src.ingestion.capture import Capture
 from src.features.neighbors import build_neighbor_pairs

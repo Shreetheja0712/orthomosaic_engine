@@ -122,7 +122,7 @@ def run_ortho_pipeline(
     Returns:
         OrthoResult with paths to all output tiles and the shared CRS.
     """
-    print(f"[ortho] Stage 10 — Orthorectification")
+    print("[ortho] Stage 10 — Orthorectification")
     print(f"[ortho] GPU available: {GPU_AVAILABLE}")
     print(f"[ortho] Target GSD: {target_gsd_m} m/pixel")
     print(f"[ortho] DSM: {dsm_path}")
@@ -154,14 +154,15 @@ def run_ortho_pipeline(
         t_img = time.perf_counter()
 
         # ── 4a. Load raw RGB image ────────────────────────────────────────────
-        # The reconstruction image name is the filename used during SfM.
-        rgb_src_path = pose.image_name  # may be relative — caller must ensure it's findable
-        rgb = _load_rgb(rgb_src_path)
-        if rgb is None:
-            # Try to find via captures list (rgb_src_path may be a bare filename)
-            cap = _find_capture_by_name(captures, pose.image_name)
-            if cap is not None and hasattr(cap, "rgb") and cap.rgb:
-                rgb = _load_rgb(cap.rgb)
+        # pose.image_name is a bare filename (e.g. "000123.jpg") relative to
+        # the SfM image folder, which is almost never the cwd. Rather than
+        # attempting a doomed cv2.imread(bare_name) first and wasting a syscall
+        # per image across the whole mission, go straight to the captures
+        # lookup which holds the correct absolute path.
+        cap = _find_capture_by_name(captures, pose.image_name)
+        rgb = None
+        if cap is not None and hasattr(cap, "rgb") and cap.rgb:
+            rgb = _load_rgb(cap.rgb)
         if rgb is None:
             print(f"[ortho] Warning: cannot load RGB for {pose.image_name} — skipping.")
             result.n_skipped += 1
@@ -185,8 +186,8 @@ def run_ortho_pipeline(
         result.rgb_tile_paths.append(rgb_out)
 
         # ── 4e. Multispectral bands (optional) ────────────────────────────────
+        # `cap` was already resolved above in step 4a.
         if process_multispectral:
-            cap = _find_capture_by_name(captures, pose.image_name)
             if cap is not None:
                 for attr, band_name in zip(_MS_BANDS, _MS_BAND_NAMES):
                     band_path = getattr(cap, attr, None)

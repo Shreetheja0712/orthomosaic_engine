@@ -21,13 +21,33 @@ Internal steps:
     pipeline.py                    orchestrator
 """
 
-from .pipeline        import run_sfm
-from .keyframes       import select_keyframes, write_keyframe_list, find_gps_guided_init_pair
-from .pose_priors     import inject_gps_priors, RTK_PRIOR_WEIGHT, GPS_PRIOR_WEIGHT
-from .glomap          import run_glomap, validate_glomap_reconstruction
-from .colmap_mapper   import run_colmap_incremental
-from .pnp_registration import register_non_keyframes
-from .final_ba        import run_final_bundle_adjustment, align_to_gps
+_EXPORTS = {
+    "run_sfm": (".pipeline", "run_sfm"),
+    "select_keyframes": (".keyframes", "select_keyframes"),
+    "write_keyframe_list": (".keyframes", "write_keyframe_list"),
+    "find_gps_guided_init_pair": (".keyframes", "find_gps_guided_init_pair"),
+    "inject_gps_priors": (".pose_priors", "inject_gps_priors"),
+    "RTK_PRIOR_WEIGHT": (".pose_priors", "RTK_PRIOR_WEIGHT"),
+    "GPS_PRIOR_WEIGHT": (".pose_priors", "GPS_PRIOR_WEIGHT"),
+    "run_glomap": (".glomap", "run_glomap"),
+    "validate_glomap_reconstruction": (".glomap", "validate_glomap_reconstruction"),
+    "run_colmap_incremental": (".colmap_mapper", "run_colmap_incremental"),
+    "register_non_keyframes": (".pnp_registration", "register_non_keyframes"),
+    "run_final_bundle_adjustment": (".final_ba", "run_final_bundle_adjustment"),
+    "align_to_gps": (".final_ba", "align_to_gps"),
+}
+
+
+def __getattr__(name: str):
+    if name not in _EXPORTS:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+    from importlib import import_module
+
+    module_name, attr_name = _EXPORTS[name]
+    value = getattr(import_module(module_name, __name__), attr_name)
+    globals()[name] = value
+    return value
 
 __all__ = [
     "run_sfm",

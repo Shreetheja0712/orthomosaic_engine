@@ -1,4 +1,3 @@
-import exifread
 from typing import Optional
 
 
@@ -19,6 +18,7 @@ def read_gps(image_path: str) -> tuple[Optional[float], Optional[float], Optiona
     Returns (latitude, longitude, altitude) or (None, None, None) if not found.
     """
     try:
+        import exifread  # lazy import: only required at runtime, not at module load
         with open(image_path, "rb") as f:
             tags = exifread.process_file(f, details=False)
 

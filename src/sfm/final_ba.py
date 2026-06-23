@@ -63,7 +63,7 @@ def run_final_bundle_adjustment(reconstruction) -> None:
 
     try:
         pycolmap.bundle_adjustment(reconstruction, options)
-        print(f"[final_ba] Done.")
+        print("[final_ba] Done.")
     except Exception as e:
         # Non-fatal — reconstruction is still usable without final BA
         print(f"[final_ba] Warning: final BA raised exception: {e}. "
@@ -121,7 +121,7 @@ def align_to_gps(
             reconstruction,
             ref_images,
         )
-        print(f"[gps_align] GPS alignment complete.")
+        print("[gps_align] GPS alignment complete.")
         return True
     except Exception as e:
         print(f"[gps_align] Warning: GPS alignment failed: {e}. "

@@ -11,12 +11,12 @@ import os
 import sys
 from pathlib import Path
 
-import h5py
 import numpy as np
 import pytest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
+h5py = pytest.importorskip("h5py")
 pycolmap = pytest.importorskip("pycolmap")
 
 from src.ingestion.capture import Capture

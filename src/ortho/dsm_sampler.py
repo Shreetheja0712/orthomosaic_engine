@@ -24,7 +24,6 @@ from ._xp import xp
 try:
     import rasterio
     from rasterio.crs import CRS
-    from rasterio.transform import Affine, from_origin
     from rasterio.warp import calculate_default_transform, reproject, Resampling
 
     _HAS_RASTERIO = True

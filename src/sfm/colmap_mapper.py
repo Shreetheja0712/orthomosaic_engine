@@ -203,7 +203,7 @@ def run_colmap_incremental(
           f"({n_reg/n_total*100:.1f}%)")
 
     if n_reg < n_total * 0.70:
-        print(f"[colmap] Warning: fewer than 70% of keyframes registered. "
-              f"Check feature matching quality.")
+        print("[colmap] Warning: fewer than 70% of keyframes registered. "
+              "Check feature matching quality.")
 
     return recon

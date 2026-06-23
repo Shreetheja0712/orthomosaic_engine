@@ -27,10 +27,8 @@ import cv2
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional
-from pathlib import Path
 
 from ..ingestion.capture import Capture
-from ..ingestion.exif_reader import read_gps
 
 
 # ── Thresholds ────────────────────────────────────────────────────────────────
@@ -63,35 +61,41 @@ class QualityResult:
 
 # ── Individual checks ─────────────────────────────────────────────────────────
 
-def _check_corrupt(rgb_path: str) -> tuple[bool, Optional[str]]:
+def _check_corrupt(rgb_path: str) -> tuple[bool, Optional[str], Optional[np.ndarray]]:
     """
     Check 1 — File integrity.
     Tries to read the image. Rejects if unreadable or empty.
     This is the safest rejection — a corrupt file is 100% useless.
+
+    Returns the loaded BGR image array (on success) alongside the
+    pass/fail result so _check_blur() can reuse it instead of re-reading
+    the same file from disk a second time.
     """
     try:
         img = cv2.imread(rgb_path)
         if img is None:
-            return False, "file unreadable by OpenCV"
+            return False, "file unreadable by OpenCV", None
         h, w = img.shape[:2]
         if h == 0 or w == 0:
-            return False, f"empty image dimensions ({w}x{h})"
-        return True, None
+            return False, f"empty image dimensions ({w}x{h})", None
+        return True, None, img
     except Exception as e:
-        return False, f"read error: {e}"
+        return False, f"read error: {e}", None
 
 
-def _check_blur(rgb_path: str) -> tuple[bool, Optional[str], float]:
+def _check_blur(img: np.ndarray) -> tuple[bool, Optional[str], float]:
     """
     Check 2 — Severe blur detection via Laplacian variance.
     Only rejects images that are SO blurry no keypoints are recoverable.
     Slightly soft images pass — overlap is more important.
 
+    Takes the already-loaded image from _check_corrupt() rather than a
+    path — avoids a second cv2.imread() of the same file.
+
     Laplacian measures second derivative (edge sharpness).
     High variance = sharp edges present = image usable.
     Very low variance = no edges = completely blurred.
     """
-    img  = cv2.imread(rgb_path)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     score = cv2.Laplacian(gray, cv2.CV_64F).var()
 
@@ -101,7 +105,7 @@ def _check_blur(rgb_path: str) -> tuple[bool, Optional[str], float]:
     return True, None, score
 
 
-def _check_gps(rgb_path: str) -> tuple[bool, Optional[str]]:
+def _check_gps(capture: Capture) -> tuple[bool, Optional[str]]:
     """
     Check 3 — GPS metadata presence.
     Without GPS the image cannot participate in:
@@ -109,9 +113,15 @@ def _check_gps(rgb_path: str) -> tuple[bool, Optional[str]]:
       - GPS distance rejection
       - georeferencing
     It becomes an orphan that slows SfM and contributes nothing.
+
+    Uses the GPS already parsed by ingestion (grouper.py calls
+    exif_reader.read_gps() once per RGB image while grouping captures) via
+    capture.latitude/longitude instead of re-reading and re-parsing the
+    EXIF tags from disk again here. Re-parsing was a third redundant
+    file read per image with no new information — the result is always
+    identical to what's already cached on the Capture.
     """
-    lat, lon, alt = read_gps(rgb_path)
-    if lat is None or lon is None:
+    if capture.latitude is None or capture.longitude is None:
         return False, "missing GPS metadata in EXIF"
     return True, None
 
@@ -126,6 +136,10 @@ def check_capture(capture: Capture) -> QualityResult:
     Checks run in order — stops at first failure (fast path).
     Order: corrupt → blur → GPS
     (corrupt must be first — other checks need readable image)
+
+    The RGB file is read from disk exactly once (in _check_corrupt) and
+    reused for the blur check; GPS comes from the Capture's cached
+    latitude/longitude rather than a second EXIF read.
     """
     # Guard: captures with no RGB path at all cannot be checked.
     # This happens when ingestion found only multispectral files for a capture ID.
@@ -141,7 +155,7 @@ def check_capture(capture: Capture) -> QualityResult:
     rgb_path = capture.rgb
 
     # Check 1 — corrupt
-    ok, reason = _check_corrupt(rgb_path)
+    ok, reason, img = _check_corrupt(rgb_path)
     if not ok:
         return QualityResult(
             capture_id = capture.capture_id,
@@ -151,19 +165,19 @@ def check_capture(capture: Capture) -> QualityResult:
             has_gps    = False,
         )
 
-    # Check 2 — blur
-    ok, reason, blur_score = _check_blur(rgb_path)
+    # Check 2 — blur (reuses `img` loaded above — no second disk read)
+    ok, reason, blur_score = _check_blur(img)
     if not ok:
         return QualityResult(
             capture_id = capture.capture_id,
             passed     = False,
             reason     = reason,
             blur_score = blur_score,
-            has_gps    = True,   # don't know yet but irrelevant
+            has_gps    = capture.latitude is not None and capture.longitude is not None,
         )
 
-    # Check 3 — GPS
-    ok, reason = _check_gps(rgb_path)
+    # Check 3 — GPS (reuses capture.latitude/longitude — no EXIF re-read)
+    ok, reason = _check_gps(capture)
     if not ok:
         return QualityResult(
             capture_id = capture.capture_id,
@@ -268,7 +282,7 @@ def print_quality_report(captures: list[Capture]) -> None:
             blur_scores.append(result.blur_score)
 
     if blur_scores:
-        print(f"\nBlur score stats:")
+        print("\nBlur score stats:")
         print(f"  min  : {min(blur_scores):.1f}")
         print(f"  max  : {max(blur_scores):.1f}")
         print(f"  mean : {np.mean(blur_scores):.1f}")

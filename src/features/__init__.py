@@ -7,9 +7,7 @@ Entry point:
     db_path = run_feature_pipeline(captures, output_dir)
 """
 
-from .extractor import extract_features, features_exist
-from .matcher import match_features
-from .db_importer import import_to_colmap
+# Lightweight sub-modules with no heavy ML dependencies — safe to import eagerly.
 from .neighbors import build_neighbor_pairs
 from .rgb_only import gps_summary, load_rgb_captures
 
@@ -56,6 +54,11 @@ def run_feature_pipeline(
     Returns:
         str path to database.db
     """
+    # Lazy imports: torch/h5py only required at runtime, not at import time.
+    from .extractor import extract_features
+    from .matcher import match_features
+    from .db_importer import import_to_colmap
+
     # Stage 3 — ALIKED
     extract_features(
         captures=captures,
@@ -82,6 +85,23 @@ def run_feature_pipeline(
     )
 
     return str(db_path)
+
+
+def __getattr__(name: str):
+    """Lazy attribute access for heavy sub-module symbols."""
+    _lazy = {
+        "extract_features": (".extractor", "extract_features"),
+        "features_exist":   (".extractor", "features_exist"),
+        "match_features":   (".matcher",   "match_features"),
+        "import_to_colmap": (".db_importer", "import_to_colmap"),
+    }
+    if name in _lazy:
+        from importlib import import_module
+        module_name, attr_name = _lazy[name]
+        value = getattr(import_module(module_name, __name__), attr_name)
+        globals()[name] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

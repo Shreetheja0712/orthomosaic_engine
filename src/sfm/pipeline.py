@@ -174,7 +174,7 @@ def run_sfm(
     n_total  = len(captures)
     n_points = len(reconstruction.points3D)
 
-    print(f"\n[sfm] ── Complete ──")
+    print("\n[sfm] ── Complete ──")
     print(f"[sfm] Registered : {n_reg}/{n_total} images "
           f"({n_reg/n_total*100:.1f}%)")
     print(f"[sfm] 3D points  : {n_points}")

@@ -19,7 +19,7 @@ API surface confirmed against pycolmap 4.0.4 in previous session:
   reconstruction.num_images            → int (total in db, not registered)
   image.projection_center()            → np.ndarray [x, y, z] ECEF
   reconstruction.compute_bounding_box() → (min_xyz, max_xyz)
-  pycolmap.GPSTransform.ellipsoid_to_ecef(lat, lon, alt) → [x, y, z]
+  pycolmap.GPSTransform().ellipsoid_to_ecef(np.array([[lat, lon, alt]])) → [[x, y, z]]
 """
 
 from __future__ import annotations
@@ -59,8 +59,35 @@ def _gps_to_ecef(lat: float, lon: float, alt: float) -> np.ndarray:
     Identical to what COLMAP uses internally for pose priors, so comparison
     with projection_center() is in the same coordinate frame.
     """
-    import pycolmap
-    return np.array(pycolmap.GPSTransform.ellipsoid_to_ecef(lat, lon, alt))
+    try:
+        import pycolmap
+    except ModuleNotFoundError:
+        return _wgs84_to_ecef(lat, lon, alt)
+
+    transform = pycolmap.GPSTransform()
+    ecef = transform.ellipsoid_to_ecef(np.array([[lat, lon, alt]], dtype="float64"))
+    return np.asarray(ecef, dtype="float64")[0]
+
+
+def _wgs84_to_ecef(lat: float, lon: float, alt: float) -> np.ndarray:
+    """Convert WGS84 geodetic coordinates to ECEF without pycolmap."""
+    semi_major_axis = 6378137.0
+    eccentricity_sq = 6.69437999014e-3
+
+    lat_rad = math.radians(lat)
+    lon_rad = math.radians(lon)
+    sin_lat = math.sin(lat_rad)
+    cos_lat = math.cos(lat_rad)
+    sin_lon = math.sin(lon_rad)
+    cos_lon = math.cos(lon_rad)
+
+    prime_vertical_radius = semi_major_axis / math.sqrt(1.0 - eccentricity_sq * sin_lat * sin_lat)
+
+    x = (prime_vertical_radius + alt) * cos_lat * cos_lon
+    y = (prime_vertical_radius + alt) * cos_lat * sin_lon
+    z = (prime_vertical_radius * (1.0 - eccentricity_sq) + alt) * sin_lat
+
+    return np.array([x, y, z], dtype="float64")
 
 
 def _camera_gps_pairs(reconstruction, captures: List[Capture]) -> Tuple[np.ndarray, np.ndarray]:
@@ -357,5 +384,5 @@ def run_glomap(
         print(f"[glomap] Validation FAILED — {reason}")
         return None
 
-    print(f"[glomap] Validation PASSED. Using GLOMAP reconstruction.")
+    print("[glomap] Validation PASSED. Using GLOMAP reconstruction.")
     return recon

@@ -32,7 +32,11 @@ numpy>=1.26.0
 cupy-cuda12x>=13.0.0           # GPU backward projection (requires CUDA 12.x — optional, falls back to numpy)
 
 # --- Image processing / Mosaicking (Stage 11 + 12) ---
-opencv-python>=4.9.0           # GainCompensator, GraphCutSeamFinder, MultiBandBlender, ArUco detection
+opencv-contrib-python>=4.9.0   # GainCompensator, GraphCutSeamFinder (graph-cut), MultiBandBlender, ArUco detection
+# NOTE: opencv-contrib-python replaces opencv-python — do NOT install both.
+#       cv2.detail_GraphCutSeamFinder('COST_COLOR') requires GCO support that
+#       is only compiled into the contrib wheels, not the standard opencv-python
+#       wheels (omitted upstream for licensing reasons).
 
 # --- Testing ---
 pytest>=9.0.0

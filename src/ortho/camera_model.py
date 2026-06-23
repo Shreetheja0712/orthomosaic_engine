@@ -13,7 +13,7 @@ COLMAP convention used throughout this module and backward_project.py:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import List
 
 import numpy as np

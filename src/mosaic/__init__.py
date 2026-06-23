@@ -30,7 +30,6 @@ from .radiometric import calibrate_image, compute_mission_panel_factors
 from .seam_finder import SeamlineSet, find_seamlines, save_seamlines
 from .tile_loader import (
     CanvasInfo,
-    TileInfo,
     compute_mosaic_canvas,
     load_tile_pixels,
     read_tile_infos,
@@ -77,13 +76,19 @@ def run_rgb_mosaic(
 
     1. read_tile_infos(tile_paths)
     2. compute_mosaic_canvas(tile_infos, gsd)
-    3. load + correct_vignetting_rgb() per tile
-    4. compute_gain_maps()
+    3. load + correct_vignetting_rgb() per tile  [all tiles held in memory simultaneously]
+    4. compute_gain_maps()                        [second float32 copy created by seam finder]
     5. find_seamlines()
-    6. save_seamlines(seamlines, save_dir)   <- CRITICAL, Stage 12 needs this
+    6. save_seamlines(seamlines, save_dir)        <- CRITICAL, Stage 12 needs this
     7. blend_rgb_mosaic()
     8. write rgb_orthomosaic.tif via Rasterio
     9. return (output_path, seamline_set)
+
+    Memory budget: all tile pixel arrays are loaded into RAM before gain
+    compensation and seam-finding, contradicting tile_loader.py's "lazy
+    one-at-a-time" docstring. For a 900-tile RGB mission at 5 cm GSD,
+    peak RAM usage is typically 4–8 GB. Chunked/tiled canvas processing
+    is a future improvement (see mosaicking.md §Memory).
     """
     logger.info("run_rgb_mosaic: starting with %d tiles", len(tile_paths))
 

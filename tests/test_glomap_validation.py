@@ -37,10 +37,7 @@ class MockImage:
 
     def projection_center(self):
         """Return ECEF position with optional offset to simulate error."""
-        import pycolmap
-        base = np.array(pycolmap.GPSTransform.ellipsoid_to_ecef(
-            self._lat, self._lon, self._alt
-        ))
+        base = _gps_to_ecef(self._lat, self._lon, self._alt)
         return base + np.array([self._offset, 0.0, 0.0])
 
 

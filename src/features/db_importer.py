@@ -37,9 +37,8 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import List, Optional
 
-import h5py
 import numpy as np
 
 from ..ingestion.capture import Capture
@@ -76,18 +75,6 @@ def _open_database(db_path: Path):
     return pycolmap.Database.open(str(db_path))
 
 
-def _image_pair_id(image_id_1: int, image_id_2: int) -> int:
-    """
-    COLMAP pair ID encoding. Delegates to pycolmap.image_pair_to_pair_id()
-    rather than re-implementing the formula — the exact encoding constant
-    (kMaxNumImages) is an internal COLMAP detail that has changed across
-    versions, and pycolmap's native function is always correct for whatever
-    COLMAP version this pycolmap build was compiled against.
-    """
-    import pycolmap
-    return pycolmap.image_pair_to_pair_id(image_id_1, image_id_2)
-
-
 def _float32_descriptors_to_uint8(desc: np.ndarray) -> np.ndarray:
     """
     pycolmap.Database.write_descriptors() requires a pycolmap.FeatureDescriptors
@@ -98,6 +85,19 @@ def _float32_descriptors_to_uint8(desc: np.ndarray) -> np.ndarray:
     """
     desc = np.ascontiguousarray(desc, dtype="float32")
     return desc.view("uint8").reshape(desc.shape[0], -1)
+
+
+def _image_pair_id(image_id1: int, image_id2: int) -> int:
+    """
+    Compute COLMAP's canonical pair_id for two image IDs.
+
+    This is the same order-independent encoding used internally by
+    db.write_matches() (db.write_matches() does this work for us when
+    importing — this wrapper exists so callers/tests can independently
+    compute the pair_id to look matches up by it later).
+    """
+    import pycolmap
+    return pycolmap.image_pair_to_pair_id(int(image_id1), int(image_id2))
 
 
 # ── public API ───────────────────────────────────────────────────────────────
@@ -124,6 +124,7 @@ def import_to_colmap(
     Returns:
         Path to database.db
     """
+    import h5py  # lazy import: only required at runtime, not at module load
     import pycolmap
 
     out = Path(output_dir)

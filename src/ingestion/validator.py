@@ -20,7 +20,12 @@ def validate_captures(captures: dict[str, Capture], strict: bool = True) -> list
     complete   = []
     incomplete = []
 
-    for capture_id, capture in sorted(captures.items()):
+    # Sort numerically by capture_id, not lexicographically — capture_id is
+    # a string of digits (e.g. "1", "2", ..., "10"), and a plain string sort
+    # would order "10" before "2". int() is safe here because capture_id is
+    # always produced by grouper.py's FILENAME_PATTERN, which only matches
+    # all-digit capture IDs.
+    for capture_id, capture in sorted(captures.items(), key=lambda kv: int(kv[0])):
         if capture.is_complete():
             complete.append(capture)
         else:
