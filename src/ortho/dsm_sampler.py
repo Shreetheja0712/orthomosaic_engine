@@ -113,7 +113,7 @@ def load_dsm(dsm_path: str) -> DSMSampler:
     origin_y = transform.f
     pixel_width = abs(transform.a)
     pixel_height = abs(transform.e)
-    mean_elevation = float(np.nanmean(array))
+    mean_elevation = float(np.nanmean(array)) if np.any(np.isfinite(array)) else 0.0
 
     data_gpu = xp.asarray(array)
 

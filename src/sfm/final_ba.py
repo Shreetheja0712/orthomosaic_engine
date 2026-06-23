@@ -100,8 +100,8 @@ def align_to_gps(
     for cap in captures:
         if cap.latitude is None or cap.longitude is None:
             continue
-        ext  = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        name = f"{cap.capture_id}{ext}"
+        ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
+        name = f"{cap.capture_id}{ext}".lower()
         ref_images[name] = (
             cap.latitude,
             cap.longitude,

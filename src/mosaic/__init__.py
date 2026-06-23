@@ -201,6 +201,12 @@ def run_ms_mosaic(
             try:
                 exif_dict = _read_exif_dict(ti.path)
             except Exception as exc:
+                if isinstance(exc, ImportError) or "exiftool" in str(exc).lower() or "executable" in str(exc).lower() or "not found" in str(exc).lower():
+                    raise RuntimeError(
+                        "run_ms_mosaic: pyexiftool or the exiftool executable is required for "
+                        "radiometric calibration but failed to run. Please ensure 'pyexiftool' is "
+                        "installed via pip and 'exiftool' is available in your PATH."
+                    ) from exc
                 logger.warning(
                     "run_ms_mosaic: could not read EXIF for %s (%s), using degraded defaults",
                     ti.path, exc,
@@ -225,16 +231,16 @@ def run_ms_mosaic(
         band_mosaics[band_name] = band_mosaic
         logger.info("run_ms_mosaic: band %s blended", band_name)
 
-    stacked = stack_ms_bands(band_mosaics, band_order=_MS_BAND_ORDER)
-
     # canvas is set during the first band's iteration.  If it is still None here
     # every band produced an empty tile list — fail loudly rather than crashing
-    # inside rasterio with a confusing NoneType attribute error.
+    # inside rasterio or stack_ms_bands with a confusing error.
     if canvas is None:
         raise RuntimeError(
             "run_ms_mosaic: canvas was never set — all MS bands produced empty tile lists. "
             "Check that run_ortho_pipeline() wrote multispectral tiles before calling run_ms_mosaic()."
         )
+
+    stacked = stack_ms_bands(band_mosaics, band_order=_MS_BAND_ORDER)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with rasterio.open(

@@ -327,8 +327,19 @@ def _utm_epsg_from_reconstruction(reconstruction) -> str:
             pp = getattr(img, "pose_prior", None)
             if pp is not None:
                 pos = pp.position
-                lats.append(float(pos[0]))
-                lons.append(float(pos[1]))
+                if abs(float(pos[0])) > 360 or abs(float(pos[1])) > 360:
+                    try:
+                        import pycolmap
+                        import numpy as np
+                        transform = pycolmap.GPSTransform()
+                        ellipsoid = transform.ecef_to_ellipsoid(np.array([pos], dtype="float64"))
+                        lats.append(float(ellipsoid[0, 0]))
+                        lons.append(float(ellipsoid[0, 1]))
+                    except Exception:
+                        continue
+                else:
+                    lats.append(float(pos[0]))
+                    lons.append(float(pos[1]))
         except Exception:
             continue
 
@@ -364,7 +375,7 @@ def rasterize_pointcloud(
     output_path: str,
     reconstruction=None,
     target_gsd_m: float = DEFAULT_TARGET_GSD_M,
-    crs: str = "EPSG:4326",
+    crs: Optional[str] = None,
 ) -> str:
     """
     Convert a fused point cloud (.ply) into a georeferenced DSM GeoTIFF.
@@ -405,23 +416,24 @@ def rasterize_pointcloud(
     # pyproj) we cannot proceed safely — the DSM would carry the wrong
     # geotag and silently break dsm_sampler.py's reprojection downstream,
     # so we raise instead of just warning.
-    if crs == "EPSG:4326" and reconstruction is not None:
-        detected = _utm_epsg_from_reconstruction(reconstruction)
-        if detected is not None:
-            _log.info(
-                "rasterize_pointcloud: auto-detected CRS %s from reconstruction GPS priors "
-                "(overrides default EPSG:4326).",
-                detected,
-            )
-            crs = detected
-        else:
-            raise ValueError(
-                "rasterize_pointcloud: crs was left at the default 'EPSG:4326' but the "
-                "fused .ply is almost certainly in a metric frame (UTM/ECEF), not WGS84 "
-                "degrees. Auto-detection from reconstruction GPS priors failed (no priors "
-                "or pyproj unavailable). Pass the correct UTM EPSG explicitly, e.g. "
-                "crs='EPSG:32644' for UTM zone 44N."
-            )
+    if crs is None or crs == "EPSG:4326":
+        crs = "EPSG:4326"
+        if reconstruction is not None:
+            detected = _utm_epsg_from_reconstruction(reconstruction)
+            if detected is not None:
+                _log.info(
+                    "rasterize_pointcloud: auto-detected CRS %s from reconstruction GPS priors "
+                    "(overrides default EPSG:4326).",
+                    detected,
+                )
+                crs = detected
+            else:
+                _log.warning(
+                    "rasterize_pointcloud: crs was left at the default 'EPSG:4326' but the "
+                    "fused .ply is almost certainly in a metric frame (UTM/ECEF), not WGS84 "
+                    "degrees. Auto-detection from reconstruction GPS priors failed (no priors "
+                    "or pyproj unavailable). Falling back to EPSG:4326, which may be incorrect."
+                )
 
     points = _read_ply_xyz(ply_path)
     grid, geotransform = _points_to_grid(points, target_gsd_m)

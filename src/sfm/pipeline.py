@@ -172,7 +172,10 @@ def run_sfm(
     # ── Summary ───────────────────────────────────────────────────────────────
     n_reg    = reconstruction.num_reg_images
     n_total  = len(captures)
-    n_points = len(reconstruction.points3D)
+    if hasattr(reconstruction, "num_points3D"):
+        n_points = reconstruction.num_points3D() if callable(reconstruction.num_points3D) else reconstruction.num_points3D
+    else:
+        n_points = len(reconstruction.points3D)
 
     print("\n[sfm] ── Complete ──")
     print(f"[sfm] Registered : {n_reg}/{n_total} images "

@@ -19,7 +19,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 
 from .fusion import run_fusion
 from .interpolate import check_gap_coverage, fill_dsm_gaps
@@ -39,7 +39,7 @@ def run_dsm_pipeline(
     num_views_fuse: int = DEFAULT_NUM_VIEWS_FUSE,
     keep_pointcloud: bool = False,
     openmvs_bin_dir: str = "",
-    crs: str = "EPSG:4326",
+    crs: Optional[str] = None,
 ) -> str:
     """
     Run the full Stage 9 DSM generation pipeline.

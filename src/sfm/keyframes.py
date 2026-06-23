@@ -36,38 +36,49 @@ def _order_by_flight_path(captures: List[Capture]) -> List[Capture]:
     """
     Order captures along the flight path using a nearest-neighbor walk
     starting from one extreme corner of the GPS bounding box.
-
-    This is NOT the same as sorting by capture_id/filename — drone flight
-    logs aren't always captured in strict numeric order, and a true
-    spatial walk gives a much more meaningful "every 3rd" keyframe sample
-    than filename order would on a boustrophedon (lawnmower) flight path.
     """
     gps_captures = _with_gps(captures)
     if len(gps_captures) <= 2:
         return list(gps_captures)
 
-    # Start from the capture with the smallest (lat + lon) — a stable,
-    # deterministic corner of the bounding box.
-    start = min(gps_captures, key=lambda c: (c.latitude, c.longitude))
-
-    remaining = set(c.capture_id for c in gps_captures)
-    by_id = {c.capture_id: c for c in gps_captures}
-
-    ordered = [start]
-    remaining.discard(start.capture_id)
-    current = start
-
-    while remaining:
-        nearest_id = min(
-            remaining,
-            key=lambda cid: _haversine_distance(
-                current.latitude, current.longitude,
-                by_id[cid].latitude, by_id[cid].longitude,
-            ),
-        )
-        current = by_id[nearest_id]
-        ordered.append(current)
-        remaining.discard(nearest_id)
+    import numpy as np
+    
+    # Extract coordinates
+    lats = np.array([c.latitude for c in gps_captures])
+    lons = np.array([c.longitude for c in gps_captures])
+    
+    # Start from the capture with the smallest (lat + lon)
+    start_idx = np.argmin(lats + lons)
+    
+    ordered = [gps_captures[start_idx]]
+    current_idx = start_idx
+    
+    unvisited = np.ones(len(gps_captures), dtype=bool)
+    unvisited[current_idx] = False
+    
+    # Convert to radians for haversine
+    lat_rad = np.radians(lats)
+    lon_rad = np.radians(lons)
+    
+    for _ in range(len(gps_captures) - 1):
+        # Current point
+        cur_lat = lat_rad[current_idx]
+        cur_lon = lon_rad[current_idx]
+        
+        # Differences
+        dlat = lat_rad - cur_lat
+        dlon = lon_rad - cur_lon
+        
+        # Haversine a component (we only need relative distance, so 'a' is sufficient)
+        a = np.sin(dlat / 2.0)**2 + np.cos(cur_lat) * np.cos(lat_rad) * np.sin(dlon / 2.0)**2
+        
+        # Ignore already visited points
+        a[~unvisited] = np.inf
+        
+        nearest_idx = int(np.argmin(a))
+        ordered.append(gps_captures[nearest_idx])
+        unvisited[nearest_idx] = False
+        current_idx = nearest_idx
 
     return ordered
 

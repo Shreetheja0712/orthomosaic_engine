@@ -55,7 +55,8 @@ class QualityResult:
 
     def __repr__(self):
         if self.passed:
-            return f"QualityResult({self.capture_id} PASS blur={self.blur_score:.1f})"
+            blur_str = f"{self.blur_score:.1f}" if self.blur_score is not None else "None"
+            return f"QualityResult({self.capture_id} PASS blur={blur_str})"
         return f"QualityResult({self.capture_id} FAIL reason='{self.reason}')"
 
 

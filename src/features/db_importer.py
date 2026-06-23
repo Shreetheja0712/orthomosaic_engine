@@ -185,7 +185,7 @@ def import_to_colmap(
         # Image name = what the mapper will look for in the image folder.
         # We reuse <capture_id>.jpg  (same naming as the feature .h5 files).
         ext = Path(cap.rgb).suffix if cap.rgb else ".jpg"
-        name = f"{cap.capture_id}{ext}"
+        name = f"{cap.capture_id}{ext}".lower()
 
         # read_image_with_name() returns None when the image does not exist yet.
         # We avoid exists_image() because it is not present in all pycolmap 4.x builds.

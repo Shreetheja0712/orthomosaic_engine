@@ -120,8 +120,8 @@ def compute_mosaic_canvas(tile_infos: List[TileInfo], target_gsd_m: float) -> Ca
                 "All tiles must share the same CRS (guaranteed by Stage 10)."
             )
 
-    width_px = max(1, int(np.ceil((max_x - min_x) / target_gsd_m)))
-    height_px = max(1, int(np.ceil((max_y - min_y) / target_gsd_m)))
+    width_px = max(1, int(np.round((max_x - min_x) / target_gsd_m)))
+    height_px = max(1, int(np.round((max_y - min_y) / target_gsd_m)))
 
     transform = Affine(target_gsd_m, 0.0, min_x, 0.0, -target_gsd_m, max_y)
 

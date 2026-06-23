@@ -25,7 +25,7 @@ def validate_captures(captures: dict[str, Capture], strict: bool = True) -> list
     # would order "10" before "2". int() is safe here because capture_id is
     # always produced by grouper.py's FILENAME_PATTERN, which only matches
     # all-digit capture IDs.
-    for capture_id, capture in sorted(captures.items(), key=lambda kv: int(kv[0])):
+    for capture_id, capture in sorted(captures.items(), key=lambda kv: (0, int(kv[0])) if str(kv[0]).isdigit() else (1, kv[0])):
         if capture.is_complete():
             complete.append(capture)
         else:

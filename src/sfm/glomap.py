@@ -106,13 +106,20 @@ def _camera_gps_pairs(reconstruction, captures: List[Capture]) -> Tuple[np.ndarr
         cap = cap_by_id.get(capture_id)
         if cap is None or cap.latitude is None or cap.longitude is None:
             continue
-
-        computed.append(np.asarray(image.projection_center(), dtype="float64"))
-        expected.append(_gps_to_ecef(
-            cap.latitude,
-            cap.longitude,
-            cap.altitude or 0.0,
-        ))
+        if getattr(image, "is_registered", lambda: True)():
+            try:
+                center = image.projection_center()
+            except AttributeError:
+                if hasattr(image, "cam_from_world"):
+                    center = -image.cam_from_world.rotation.matrix().T @ image.cam_from_world.translation
+                else:
+                    center = -image.rotation_matrix().T @ image.tvec
+            computed.append(np.asarray(center, dtype="float64"))
+            expected.append(_gps_to_ecef(
+                cap.latitude,
+                cap.longitude,
+                cap.altitude or 0.0,
+            ))
 
     if not computed:
         return np.empty((0, 3)), np.empty((0, 3))

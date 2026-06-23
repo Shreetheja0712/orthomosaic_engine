@@ -17,7 +17,7 @@ near a seam without any pyramid-style alteration of the underlying values.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Dict, List
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 import cv2
 import numpy as np
@@ -123,12 +123,15 @@ def blend_ms_mosaic(
 
 def stack_ms_bands(
     band_mosaics: Dict[str, np.ndarray],
-    band_order: List[str] = ["GRE", "RED", "REG", "NIR"],
+    band_order: Optional[List[str]] = None,
 ) -> np.ndarray:
     """
     Stack the 4 single-band float32 mosaics into one (4, H, W) array in the
     canonical output band order: Green, Red, RedEdge, NIR.
     """
+    if band_order is None:
+        band_order = ["GRE", "RED", "REG", "NIR"]
+    
     missing = [b for b in band_order if b not in band_mosaics]
     if missing:
         raise ValueError(f"stack_ms_bands: missing band(s) {missing} in band_mosaics")

@@ -1,11 +1,14 @@
 from typing import Optional
 
 
-def _convert_dms_to_decimal(dms_values, ref: str) -> float:
+def _convert_dms_to_decimal(dms_values, ref: str) -> Optional[float]:
     """Convert degrees/minutes/seconds to decimal degrees."""
-    d = float(dms_values[0].num) / float(dms_values[0].den)
-    m = float(dms_values[1].num) / float(dms_values[1].den)
-    s = float(dms_values[2].num) / float(dms_values[2].den)
+    try:
+        d = float(dms_values[0].num) / float(dms_values[0].den)
+        m = float(dms_values[1].num) / float(dms_values[1].den)
+        s = float(dms_values[2].num) / float(dms_values[2].den)
+    except ZeroDivisionError:
+        return None
     decimal = d + (m / 60.0) + (s / 3600.0)
     if ref in ("S", "W"):
         decimal = -decimal

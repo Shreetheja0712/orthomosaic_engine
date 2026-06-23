@@ -7,6 +7,8 @@ Entry point:
     db_path = run_feature_pipeline(captures, output_dir)
 """
 
+from typing import Optional
+
 # Lightweight sub-modules with no heavy ML dependencies — safe to import eagerly.
 from .neighbors import build_neighbor_pairs
 from .rgb_only import gps_summary, load_rgb_captures
@@ -19,7 +21,7 @@ def run_feature_pipeline(
     n_neighbors: int = 8,
     max_keypoints: int = 8192,
     resize: int = 1600,
-    focal_length_px: float = None,
+    focal_length_px: Optional[float] = None,
     run_geometric_verification: bool = True,
 ) -> str:
     """
