@@ -5,9 +5,12 @@ from .capture import Capture
 from .exif_reader import read_gps
 
 
-# Matches: IMG_<frame>_<capture>_<band>.<ext>
+# Matches: IMG_<optional_prefix>_<capture>_<band>.<ext>
+# Supports formats like:
+# - IMG_0001_000_RGB.jpg (test format)
+# - IMG_260315_083045_0000_RGB.JPG (user format with date and time)
 FILENAME_PATTERN = re.compile(
-    r"^IMG_\d+_(\d+)_(RGB|GRE|NIR|RED|REG)\.(jpg|jpeg|tiff|tif)$",
+    r"^IMG_(?:\d+_)*(\d+)_(RGB|GRE|NIR|RED|REG)\.(jpg|jpeg|tiff|tif)$",
     re.IGNORECASE
 )
 

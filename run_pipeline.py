@@ -3,6 +3,9 @@ run_pipeline.py  —  Full Agri Orthomosaic Engine pipeline
 Usage: python run_pipeline.py --mission /path/to/your_mission --output /path/to/outputs
 """
 
+import ssl
+ssl._create_default_https_context = ssl._create_unverified_context
+
 import argparse
 import time
 from pathlib import Path
@@ -28,6 +31,8 @@ def main():
                         help="Set this flag if your drone has RTK GPS")
     parser.add_argument("--no-gpu",  action="store_true",
                         help="Disable GPU (run on CPU only — much slower)")
+    parser.add_argument("--n-neighbors", type=int, default=8,
+                        help="GPS neighbors per image (default 8, use 12 for >80% overlap)")
     args = parser.parse_args()
 
     mission_dir = args.mission
@@ -46,6 +51,19 @@ def main():
     print("\n=== Stage 1+2: Ingestion & Quality Filter ===")
     stage_start = time.time()
     captures = load_mission(mission_dir)
+
+    # Detect if GPS is completely missing from EXIF
+    has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
+    if not has_any_gps:
+        print("\n[pipeline] WARNING: No GPS metadata found in any image EXIF.")
+        print("[pipeline] Automatically generating sequential mock GPS coordinates to allow relative reconstruction.")
+        print("[pipeline] Matching will fall back to EXHAUSTIVE to ensure correct stitching without GPS.")
+        for i, cap in enumerate(captures):
+            cap.latitude = 45.0 + i * 0.000045  # spacing of approx 5 meters
+            cap.longitude = 9.0
+            cap.altitude = 120.0
+        args.n_neighbors = len(captures)
+
     captures = filter_quality(captures)
     print(f"  {len(captures)} valid captures ready")
     stage_start = print_stage_time("Stage 1+2", stage_start)
@@ -57,7 +75,7 @@ def main():
 
     # ── Stage 4: Feature matching ─────────────────────────────────────────────
     print("\n=== Stage 4: Feature Matching (LightGlue) ===")
-    match_features(captures, output_dir=str(output_dir), n_neighbors=8, use_gpu=use_gpu)
+    match_features(captures, output_dir=str(output_dir), n_neighbors=args.n_neighbors, use_gpu=use_gpu)
     stage_start = print_stage_time("Stage 4", stage_start)
 
     # ── Stage 5: Geometric verification ──────────────────────────────────────

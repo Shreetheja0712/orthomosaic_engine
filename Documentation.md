@@ -185,6 +185,9 @@ PyTorch official install selector: https://pytorch.org/get-started/locally/
 CuPy must match your CUDA version exactly:
 
 ```bash
+# CUDA 13.x 
+pip install cupy-cuda13x
+
 # CUDA 12.x (any 12.x version)
 pip install cupy-cuda12x
 
@@ -281,6 +284,18 @@ colmap help
 ---
 
 ## 8. Install OpenMVS (depth maps)
+| Package | Version | Stage | What it does |
+| :--- | :--- | :--- | :--- |
+| `ExifRead` | ≥3.0 | Stage 1, 2 | Reads GPS coordinates from JPEG EXIF metadata |
+| `pyexiftool` | ≥0.5.6 | Stage 12 | Reads Sequoia/MicaSense XMP radiometric fields |
+| `numpy` | ≥1.26 | All stages | Core array mathematics |
+| `torch` | ≥2.2 | Stage 3, 4 | GPU tensor operations for ALIKED + LightGlue |
+| `torchvision` | ≥0.17 | Stage 3 | Image loading utilities used by LightGlue |
+| `lightglue` | ≥0.1 | Stage 3, 4 | ALIKED feature extractor + LightGlue matcher |
+| `kornia` | ≥0.7.3 | Stage 3, 4 | Image geometry utilities (LightGlue dependency) |
+| `h5py` | ≥3.10 | Stage 3, 4 | HDF5 file storage for features and matches |
+| `pycolmap` | ≥4.0.4 | Stage 5, 6, 7 | Python bindings to COLMAP (SfM) |
+| `poselib` | latest | Stage 5 | Fast LO-RANSAC geometric verification |
 
 OpenMVS generates the depth maps (Stage 8) and DSM (Stage 9). It is also a separate program.
 
@@ -313,6 +328,18 @@ sudo apt-get install -y libopenmvs-dev openmvs
 # Verify
 DensifyPointCloud --help
 ```
+| Package | Version | Stage | What it does |
+| :--- | :--- | :--- | :--- |
+| `ExifRead` | ≥3.0 | Stage 1, 2 | Reads GPS coordinates from JPEG EXIF metadata |
+| `pyexiftool` | ≥0.5.6 | Stage 12 | Reads Sequoia/MicaSense XMP radiometric fields |
+| `numpy` | ≥1.26 | All stages | Core array mathematics |
+| `torch` | ≥2.2 | Stage 3, 4 | GPU tensor operations for ALIKED + LightGlue |
+| `torchvision` | ≥0.17 | Stage 3 | Image loading utilities used by LightGlue |
+| `lightglue` | ≥0.1 | Stage 3, 4 | ALIKED feature extractor + LightGlue matcher |
+| `kornia` | ≥0.7.3 | Stage 3, 4 | Image geometry utilities (LightGlue dependency) |
+| `h5py` | ≥3.10 | Stage 3, 4 | HDF5 file storage for features and matches |
+| `pycolmap` | ≥4.0.4 | Stage 5, 6, 7 | Python bindings to COLMAP (SfM) |
+| `poselib` | latest | Stage 5 | Fast LO-RANSAC geometric verification |
 
 OpenMVS repo: https://github.com/cdcseacave/openMVS
 
@@ -341,6 +368,18 @@ If you don't have CUDA installed yet:
 
 # Quick verify after install:
 nvidia-smi
+| Package | Version | Stage | What it does |
+| :--- | :--- | :--- | :--- |
+| `ExifRead` | ≥3.0 | Stage 1, 2 | Reads GPS coordinates from JPEG EXIF metadata |
+| `pyexiftool` | ≥0.5.6 | Stage 12 | Reads Sequoia/MicaSense XMP radiometric fields |
+| `numpy` | ≥1.26 | All stages | Core array mathematics |
+| `torch` | ≥2.2 | Stage 3, 4 | GPU tensor operations for ALIKED + LightGlue |
+| `torchvision` | ≥0.17 | Stage 3 | Image loading utilities used by LightGlue |
+| `lightglue` | ≥0.1 | Stage 3, 4 | ALIKED feature extractor + LightGlue matcher |
+| `kornia` | ≥0.7.3 | Stage 3, 4 | Image geometry utilities (LightGlue dependency) |
+| `h5py` | ≥3.10 | Stage 3, 4 | HDF5 file storage for features and matches |
+| `pycolmap` | ≥4.0.4 | Stage 5, 6, 7 | Python bindings to COLMAP (SfM) |
+| `poselib` | latest | Stage 5 | Fast LO-RANSAC geometric verification |
 nvcc --version
 ```
 
@@ -781,6 +820,16 @@ print(f"NDVI range: {ndvi.min():.3f} to {ndvi.max():.3f}")
 ---
 
 ## 14. Troubleshooting
+    print("\n=== Stage 5: Geometric Verification (PoseLib) ===")
+    db_path = str(output_dir / "database.db")
+    import_to_colmap_db(captures, output_dir=str(output_dir), db_path=db_path)
+    verify_matches_poselib(db_path)
+
+    # ── Stage 6+7: SfM + Georeferencing ──────────────────────────────────────
+    print("\n=== Stage 6+7: SfM Mapping + Georeferencing (COLMAP) ===")
+    reconstruction = run_sfm(
+        database_path = db_path,
+        image_dir     = str(Path(mission_dir) / "rgb"),
 
 ### "CUDA not available" — PyTorch can't find GPU
 ```bash
