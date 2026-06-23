@@ -18,7 +18,7 @@ pycolmap>=4.0.4; python_version < "3.14"
 
 # --- Geospatial / raster I/O (Stages 7–13) ---
 rasterio>=1.3.0                # read/write georeferenced GeoTIFF files
-GDAL>=3.4                   # fillnodata, warp, GeoTIFF internals (install pre-built wheel on Windows — see installations.md)
+GDAL>=3.4.1              # fillnodata, warp, GeoTIFF internals (install pre-built wheel on Windows — see installations.md)
 pyproj>=3.6.0                  # CRS transforms (WGS84 ↔ UTM)
 affine>=2.4.0                  # Affine transform objects used by tile_loader + ortho footprint
 
