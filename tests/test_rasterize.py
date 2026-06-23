@@ -137,6 +137,24 @@ def test_manual_ply_ascii_roundtrip(tmp_path):
     np.testing.assert_allclose(result, expected, atol=1e-4)
 
 
+def test_manual_ply_ascii_crlf_header_roundtrip(tmp_path):
+    points = [(1.0, 2.0, 3.0), (-1.5, 0.0, 100.25)]
+    ply_path = tmp_path / "ascii_crlf.ply"
+    with open(ply_path, "wb") as f:
+        f.write(b"ply\r\n")
+        f.write(b"format ascii 1.0\r\n")
+        f.write(f"element vertex {len(points)}\r\n".encode("ascii"))
+        f.write(b"property float x\r\n")
+        f.write(b"property float y\r\n")
+        f.write(b"property float z\r\n")
+        f.write(b"end_header\r\n")
+        for x, y, z in points:
+            f.write(f"{x} {y} {z}\r\n".encode("ascii"))
+
+    result = _manual_read_ply_xyz(str(ply_path))
+    np.testing.assert_allclose(result, np.array(points, dtype=np.float32), atol=1e-4)
+
+
 def test_manual_ply_binary_roundtrip(tmp_path):
     points = [(1.0, 2.0, 3.0), (4.0, 5.0, 6.0), (-1.5, 0.0, 100.25)]
     ply_path = tmp_path / "binary.ply"

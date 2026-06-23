@@ -29,7 +29,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import logging
 import numpy as np
@@ -110,11 +110,21 @@ def _manual_read_ply_xyz(ply_path: str) -> np.ndarray:
     with open(ply_path, "rb") as f:
         raw = f.read()
 
-    header_end = raw.find(b"end_header\n")
-    if header_end == -1:
+    header_lines_raw = []
+    body_offset = None
+    offset = 0
+    for line in raw.splitlines(keepends=True):
+        line_body = line.rstrip(b"\r\n")
+        offset += len(line)
+        if line_body == b"end_header":
+            body_offset = offset
+            break
+        header_lines_raw.append(line)
+
+    if body_offset is None:
         raise ValueError(f"Not a valid PLY file (no end_header): {ply_path}")
 
-    header_text = raw[:header_end].decode("ascii", errors="replace")
+    header_text = b"".join(header_lines_raw).decode("ascii", errors="replace")
     header_lines = header_text.splitlines()
 
     fmt = None
@@ -155,7 +165,7 @@ def _manual_read_ply_xyz(ply_path: str) -> np.ndarray:
     prop_names = [p.name for p in properties]
     xyz_idx = [prop_names.index(c) for c in ("x", "y", "z")]
 
-    body = raw[header_end + len(b"end_header\n"):]
+    body = raw[body_offset:]
 
     if fmt == "ascii":
         points = np.zeros((vertex_count, 3), dtype=np.float32)
