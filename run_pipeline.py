@@ -31,8 +31,8 @@ def main():
                         help="Set this flag if your drone has RTK GPS")
     parser.add_argument("--no-gpu",  action="store_true",
                         help="Disable GPU (run on CPU only — much slower)")
-    parser.add_argument("--n-neighbors", type=int, default=8,
-                        help="GPS neighbors per image (default 8, use 12 for >80% overlap)")
+    parser.add_argument("--n-neighbors", type=int, default=20,
+                        help="GPS neighbors per image for feature matching (default 20)")
     parser.add_argument(
         "--start-from-stage", type=int, default=1,
         choices=range(1, 13), metavar="N",
@@ -68,9 +68,11 @@ def main():
     captures = load_mission(mission_dir)
 
     # Detect if GPS is completely missing from EXIF
-    # Default keyframe interval set to 1 to ensure dense match graphs.
-    # A value of 3 drops overlap too much on missions with standard 70-80% overlap.
-    sfm_keyframe_interval = 1
+    # interval=3 is correct at 80% overlap: every ground point still visible
+    # in 8+ keyframes, SfM runs 3x faster. The disconnected-graph failure
+    # seen earlier was caused by max_epipolar_error=1.5px in geometric
+    # verification being too tight (now fixed to 3.0px), NOT by this interval.
+    sfm_keyframe_interval = 3
     has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
     if not has_any_gps:
         print("\n[pipeline] WARNING: No GPS metadata found in any image EXIF.")
@@ -81,7 +83,7 @@ def main():
             cap.longitude = 9.0
             cap.altitude = 120.0
         args.n_neighbors = len(captures)
-        sfm_keyframe_interval = 1
+        sfm_keyframe_interval = 1  # no GPS ordering → use all images
 
     captures = filter_quality(captures)
     print(f"  {len(captures)} valid captures ready")

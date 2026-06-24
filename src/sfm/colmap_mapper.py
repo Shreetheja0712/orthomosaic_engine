@@ -276,12 +276,13 @@ def run_colmap_incremental(
     mapper_image_path = _prepare_mapper_image_dir(keyframes, output_path)
 
     # ── Pre-flight connectivity check ─────────────────────────────────────────
-    # Use _verified_pair_stats to verify the match graph BEFORE starting SfM.
-    # If connectivity is poor, SfM will produce many small disconnected components
-    # and spend hours failing to register images. Better to abort early and
-    # re-run from Stage 4 with more neighbors.
     image_names = [colmap_image_name(cap) for cap in keyframes]
     stats = _verified_pair_stats(database_path, image_names)
+
+    # pct_matched must be initialised here — it's read by _force_init logic
+    # below regardless of whether the stats block runs.
+    pct_matched = 0.0
+    avg_pairs   = 0.0
     if stats is not None:
         n_kf       = len(image_names)
         n_matched  = stats["images_with_verified_matches"]
@@ -302,6 +303,22 @@ def run_colmap_incremental(
             print("[colmap] → Run from Stage 4 with --n-neighbors 20 or higher.")
             return None
 
+        # Diagnose the real root cause when avg_pairs is low despite
+        # high n_neighbors. This is the most common failure mode:
+        # feature matching found candidates but PoseLib RANSAC rejected them
+        # (too few inliers, or max_epipolar_error=1.5px was too tight).
+        if avg_pairs < 3.0 and pct_matched > 80.0:
+            print("[colmap] WARNING: High connectivity but LOW avg pairs/keyframe.")
+            print(f"[colmap]   {avg_pairs:.1f} pairs/image means most match candidates")
+            print("[colmap]   were rejected by PoseLib geometric verification.")
+            print("[colmap] LIKELY CAUSE: max_epipolar_error=1.5px too tight for")
+            print("[colmap]   this camera/altitude combination. The database must")
+            print("[colmap]   be rebuilt with a looser threshold.")
+            print("[colmap] FIX: In src/features/geometric_verification.py:")
+            print("[colmap]   DEFAULT_RANSAC_OPTIONS['max_epipolar_error'] = 3.0")
+            print("[colmap]   Then re-run from Stage 5 (geometric verification).")
+            print("[colmap]   Do NOT set keyframe_interval=1 — that is not the cause.")
+
         if pct_matched < 80.0:
             print(f"[colmap] WARNING: Only {pct_matched:.0f}% of keyframes have verified matches.")
             print(f"[colmap]   {n_isolated} isolated keyframes will never be registered.")
@@ -309,7 +326,8 @@ def run_colmap_incremental(
             print("[colmap] RECOMMENDATION: Stop now and re-run from Stage 4:")
             print("[colmap]   --n-neighbors 20   (current is likely 8)")
             if avg_pairs < 3.0:
-                print("[colmap]   avg pairs/keyframe is very low — use --n-neighbors 30 for dense missions.")
+                print("[colmap]   avg pairs/keyframe is very low — also check")
+                print("[colmap]   max_epipolar_error in geometric_verification.py")
         elif pct_matched < 95.0:
             print(f"[colmap] OK — {pct_matched:.0f}% connected. A few isolated images is normal.")
             print(f"[colmap]   Expect 1-2 sub-reconstructions at most.")

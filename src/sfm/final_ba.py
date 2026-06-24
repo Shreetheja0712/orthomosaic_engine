@@ -59,11 +59,18 @@ def run_final_bundle_adjustment(reconstruction) -> None:
           f"{n_points} 3D points...")
 
     options = pycolmap.BundleAdjustmentOptions()
-    # Keep consistent with incremental step filter
-    if hasattr(options, "loss_function_type") and hasattr(pycolmap, "LossFunctionType"):
+    # loss_function_type moved to options.ceres in pycolmap 4.x.
+    # options.loss_function_type no longer exists — setting it would raise
+    # AttributeError, which is exactly the crash seen in the logs.
+    # TRIVIAL loss = standard least-squares (no robustifier).
+    # Correct after LightGlue/PoseLib have already removed outliers —
+    # we no longer need a robust loss at final BA time.
+    if hasattr(options, "loss_function_type"):
+        # pycolmap <4.x path
         options.loss_function_type = pycolmap.LossFunctionType.TRIVIAL
-
-    
+    elif hasattr(options, "ceres") and hasattr(options.ceres, "loss_function_type"):
+        # pycolmap 4.x path (confirmed against 4.0.4)
+        options.ceres.loss_function_type = pycolmap.LossFunctionType.TRIVIAL
 
     try:
         pycolmap.bundle_adjustment(reconstruction, options)

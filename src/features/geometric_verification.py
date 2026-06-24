@@ -52,7 +52,7 @@ CONFIG_CALIBRATED = 2
 #   The old defaults (max_iterations=10000, min_iterations=100) ran 25-250×
 #   more iterations than needed, causing ~150ms/pair instead of ~2ms/pair.
 DEFAULT_RANSAC_OPTIONS = {
-    "max_epipolar_error": 1.5,
+    "max_epipolar_error": 3.0,
     "success_prob": 0.999,
     "min_iterations": 10,
     "max_iterations": 500,
