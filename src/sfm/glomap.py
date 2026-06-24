@@ -324,6 +324,7 @@ def validate_glomap_reconstruction(
 
 def run_glomap(
     database_path   : str,
+    image_dir       : str,
     output_dir      : str,
     keyframes       : List[Capture],
     has_rtk         : bool = True,
@@ -371,6 +372,7 @@ def run_glomap(
     try:
         reconstructions = pycolmap.global_mapping(
             database_path = str(database_path),
+            image_path    = str(image_dir),
             output_path   = str(output_path),
             options       = options,
         )

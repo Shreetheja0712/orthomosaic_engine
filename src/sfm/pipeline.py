@@ -124,6 +124,7 @@ def run_sfm(
         print("\n[sfm] ── Step 3b: GLOMAP (fast path) ──")
         reconstruction = run_glomap(
             database_path = database_path,
+            image_dir     = str(image_dir),
             output_dir    = str(output_path),
             keyframes     = keyframes,
             has_rtk       = has_rtk,
