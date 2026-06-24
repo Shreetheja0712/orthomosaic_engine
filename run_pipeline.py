@@ -211,7 +211,6 @@ def main():
             reconstruction    = reconstruction,
             captures          = captures,
             output_dir        = str(depth_dir),
-            colmap_sparse_dir = str(output_dir / "sparse"),
             use_gpu           = use_gpu,
         )
         stage_start = print_stage_time("Stage 8", stage_start)

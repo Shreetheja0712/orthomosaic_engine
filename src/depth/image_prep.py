@@ -138,8 +138,8 @@ def prepare_openmvs_workspace(
         sparse_dir = output_path / "sparse"
         sparse_dir.mkdir(exist_ok=True)
         colmap_sparse_dir = str(sparse_dir)
-        _export_reconstruction_to_colmap_bin(reconstruction, str(sparse_dir))
-        logger.info("Exported COLMAP sparse model to %s", sparse_dir)
+        _export_reconstruction_to_colmap_text(reconstruction, str(sparse_dir))
+        logger.info("Exported COLMAP sparse model (TEXT) to %s", sparse_dir)
 
     # ------------------------------------------------------------------ #
     # 3. Run InterfaceCOLMAP to produce the .mvs scene file
@@ -185,12 +185,15 @@ def _symlink_or_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
-def _export_reconstruction_to_colmap_bin(reconstruction, sparse_dir: str) -> None:
+def _export_reconstruction_to_colmap_text(reconstruction, sparse_dir: str) -> None:
     """
-    Write COLMAP binary model files from a pycolmap.Reconstruction.
+    Write COLMAP text model files from a pycolmap.Reconstruction.
 
-    Writes cameras.bin, images.bin, and points3D.bin to *sparse_dir*.
-    These are needed by InterfaceCOLMAP.
+    Writes cameras.txt, images.txt, and points3D.txt to *sparse_dir*.
+    We export as TEXT rather than BINARY because OpenMVS InterfaceCOLMAP
+    crashes silently (exit 1) when parsing COLMAP 4.0+ binary models
+    (which introduced frames.bin and rigs.bin). The text parser in OpenMVS
+    is more robust and safely ignores the unsupported 4.0+ extensions.
 
     Parameters
     ----------
@@ -198,9 +201,12 @@ def _export_reconstruction_to_colmap_bin(reconstruction, sparse_dir: str) -> Non
     sparse_dir : str
         Target directory (must already exist).
     """
-    # pycolmap.Reconstruction.write() writes the three .bin files
-    reconstruction.write(sparse_dir)
-    logger.debug("Wrote cameras.bin / images.bin / points3D.bin to %s", sparse_dir)
+    if hasattr(reconstruction, "write_text"):
+        reconstruction.write_text(sparse_dir)
+    else:
+        # Fallback for older pycolmap versions
+        reconstruction.write(sparse_dir)
+    logger.debug("Wrote COLMAP sparse model (TEXT) to %s", sparse_dir)
 
 
 def _run_interface_colmap(
@@ -251,10 +257,22 @@ def _run_interface_colmap(
     )
 
     if result.returncode != 0:
+        log_content = "<No InterfaceCOLMAP-*.log found>"
+        log_files = list(Path(output_mvs).parent.glob("InterfaceCOLMAP-*.log"))
+        if log_files:
+            try:
+                # OpenMVS logs can be verbose; grab the last 50 lines.
+                with open(max(log_files, key=os.path.getctime), "r") as f:
+                    lines = f.readlines()
+                    log_content = "".join(lines[-50:])
+            except Exception as e:
+                log_content = f"<Failed to read log: {e}>"
+
         raise RuntimeError(
             f"InterfaceCOLMAP failed (exit {result.returncode}).\n"
             f"stdout:\n{result.stdout}\n"
-            f"stderr:\n{result.stderr}"
+            f"stderr:\n{result.stderr}\n"
+            f"--- InterfaceCOLMAP Log ---\n{log_content}"
         )
 
     logger.debug("InterfaceCOLMAP stdout:\n%s", result.stdout)
