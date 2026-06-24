@@ -270,17 +270,48 @@ def run_colmap_incremental(
     output_path.mkdir(parents=True, exist_ok=True)
     mapper_image_path = _prepare_mapper_image_dir(keyframes, output_path)
 
-    # Build keyframe image name list
+    # ── Pre-flight connectivity check ─────────────────────────────────────────
+    # Use _verified_pair_stats to verify the match graph BEFORE starting SfM.
+    # If connectivity is poor, SfM will produce many small disconnected components
+    # and spend hours failing to register images. Better to abort early and
+    # re-run from Stage 4 with more neighbors.
     image_names = [colmap_image_name(cap) for cap in keyframes]
     stats = _verified_pair_stats(database_path, image_names)
     if stats is not None:
-        print("[colmap] Verified match graph: "
-              f"{stats['verified_pairs']} pairs across "
-              f"{stats['images_with_verified_matches']}/{len(image_names)} mapper images")
-        if stats["verified_pairs"] == 0:
-            print("[colmap] Warning: selected mapper images have no verified matches. "
-                  "Incremental mapping is unlikely to initialize.")
+        n_kf       = len(image_names)
+        n_matched  = stats["images_with_verified_matches"]
+        n_pairs    = stats["verified_pairs"]
+        n_isolated = n_kf - n_matched
+        avg_pairs  = n_pairs / max(n_matched, 1)
+        pct_matched = 100.0 * n_matched / max(n_kf, 1)
+
+        print("[colmap] ─── Connectivity check ────────────────────────────────")
+        print(f"[colmap]  Keyframes for SfM     : {n_kf}")
+        print(f"[colmap]  With verified matches  : {n_matched}/{n_kf} ({pct_matched:.1f}%)")
+        print(f"[colmap]  Isolated keyframes     : {n_isolated}")
+        print(f"[colmap]  Verified pairs total   : {n_pairs}")
+        print(f"[colmap]  Avg pairs / keyframe   : {avg_pairs:.1f}")
+
+        if n_pairs == 0:
+            print("[colmap] FATAL: No verified pairs among keyframes.")
+            print("[colmap] → Run from Stage 4 with --n-neighbors 20 or higher.")
             return None
+
+        if pct_matched < 80.0:
+            print(f"[colmap] WARNING: Only {pct_matched:.0f}% of keyframes have verified matches.")
+            print(f"[colmap]   {n_isolated} isolated keyframes will never be registered.")
+            print(f"[colmap]   Expect {max(1, round(n_isolated/60))}+ disconnected sub-reconstructions.")
+            print("[colmap] RECOMMENDATION: Stop now and re-run from Stage 4:")
+            print("[colmap]   --n-neighbors 20   (current is likely 8)")
+            if avg_pairs < 3.0:
+                print("[colmap]   avg pairs/keyframe is very low — use --n-neighbors 30 for dense missions.")
+        elif pct_matched < 95.0:
+            print(f"[colmap] OK — {pct_matched:.0f}% connected. A few isolated images is normal.")
+            print(f"[colmap]   Expect 1-2 sub-reconstructions at most.")
+        else:
+            print(f"[colmap] GOOD — {pct_matched:.0f}% of keyframes are connected.")
+            print(f"[colmap]   Single-component reconstruction expected. ✓")
+        print("[colmap] ────────────────────────────────────────────────────────")
 
     # ── Options ───────────────────────────────────────────────────────────────
     opt = pycolmap.IncrementalPipelineOptions()
@@ -289,8 +320,6 @@ def run_colmap_incremental(
     opt.image_names = image_names
 
     # Optimization 3 — BA frequency tuning (safe for flat terrain + clean matches)
-    # ba_global_frames_ratio was renamed from ba_global_images_ratio in some builds;
-    # _set_opt silently skips the attribute if this pycolmap version doesn’t expose it.
     _set_opt(opt.mapper, "ba_local_num_images", 12)   # default 6
     _set_opt(opt, "ba_global_frames_ratio", 1.3)       # default 1.1
 
@@ -299,6 +328,20 @@ def run_colmap_incremental(
 
     # Optimization 5 — all CPU cores
     opt.num_threads = -1
+
+    # Cap sub-reconstructions at 5 (not 1).
+    # max_num_models=1 would abort the moment the first component finishes,
+    # missing larger components that start later.
+    # max_num_models=5 lets COLMAP find up to 5 components so we can compare
+    # their sizes and pick the largest — while still avoiding the 11-component
+    # death spiral seen when this is uncapped.
+    # If you still get 5 components → increase --n-neighbors.
+    _set_opt(opt, "max_num_models", 5)
+
+    # min_num_matches: keep at COLMAP default (15 verified inliers minimum).
+    # Do NOT lower this — borderline pairs hurt bundle adjustment accuracy.
+    # The fix for disconnected graphs is more neighbors (--n-neighbors 20),
+    # not weaker pair quality thresholds.
 
     # GPS/RTK priors — activate prior position constraints.
     # use_prior_position tells BA to use the pose priors injected by pose_priors.py.
@@ -359,6 +402,16 @@ def run_colmap_incremental(
         print("[colmap] Mapper produced no reconstruction.")
         return None
 
+    # Show all sub-reconstruction sizes so the user knows if the graph was disconnected
+    if len(reconstructions) > 1:
+        print(f"[colmap] WARNING: mapper produced {len(reconstructions)} sub-reconstructions "
+              f"(disconnected graph). Sizes:")
+        for idx, r in sorted(reconstructions.items(), key=lambda kv: -kv[1].num_reg_images):
+            print(f"[colmap]   component {idx}: {r.num_reg_images} images registered")
+        print(f"[colmap] Using the largest: component with {recon.num_reg_images} images.")
+        print(f"[colmap] ACTION NEEDED: re-run from stage 4 with --n-neighbors 20 or higher")
+        print(f"[colmap]   to connect all image clusters into a single reconstruction.")
+
     n_reg   = recon.num_reg_images
     n_total = len(keyframes)
     print(f"[colmap] Registered {n_reg}/{n_total} keyframes "
@@ -366,6 +419,6 @@ def run_colmap_incremental(
 
     if n_reg < n_total * 0.70:
         print("[colmap] Warning: fewer than 70% of keyframes registered. "
-              "Check feature matching quality.")
+              "Check feature matching quality or increase --n-neighbors.")
 
     return recon
