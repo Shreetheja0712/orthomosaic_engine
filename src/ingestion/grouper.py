@@ -65,8 +65,13 @@ def _parse_filename(filename: str) -> Optional[tuple[str, str]]:
     # ── DJI ───────────────────────────────────────────────────────────────────
     m = DJI_PATTERN.match(filename)
     if m:
-        capture_id = f"{m.group(1)}_{m.group(2)}"   # e.g. "20240405154706_0001"
-        band = m.group(3).upper()                    # "D", "MS_G", "MS_NIR", …
+        # Use only the frame number (group 2) as capture_id, NOT the timestamp.
+        # DJI RGB and multispectral sensors fire ~1 s apart, so the timestamp
+        # embedded in the filename differs between the _D.JPG and the _MS_*.TIF
+        # files of the same physical capture.  The 4-digit frame counter is the
+        # only field that is identical across all 5 bands of a single burst.
+        capture_id = m.group(2)       # e.g. "0001", "0125"
+        band = m.group(3).upper()     # "D", "MS_G", "MS_NIR", …
         return capture_id, band
 
     return None
