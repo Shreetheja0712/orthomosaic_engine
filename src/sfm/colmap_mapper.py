@@ -253,6 +253,7 @@ def run_colmap_incremental(
     keyframes      : List[Capture],
     init_pair      : Optional[Tuple[Capture, Capture]] = None,
     use_prior_position: bool = True,
+    use_default_colmap: bool = False,
 ) -> Optional[object]:
     """
     Step 4 — COLMAP incremental SfM on keyframes only.
@@ -340,14 +341,17 @@ def run_colmap_incremental(
     opt = pycolmap.IncrementalPipelineOptions()
 
     # Optimization 1 — keyframe image list (image_names filters what mapper sees)
+    # We always set this, even in default colmap mode, because if default_colmap is used, 
+    # keyframes contains ALL images.
     opt.image_names = image_names
 
-    # Optimization 3 — BA frequency tuning (safe for flat terrain + clean matches)
-    _set_opt(opt.mapper, "ba_local_num_images", 12)   # default 6
-    _set_opt(opt, "ba_global_frames_ratio", 1.3)       # default 1.1
+    if not use_default_colmap:
+        # Optimization 3 — BA frequency tuning (safe for flat terrain + clean matches)
+        _set_opt(opt.mapper, "ba_local_num_images", 12)   # default 6
+        _set_opt(opt, "ba_global_frames_ratio", 1.3)       # default 1.1
 
-    # Optimization 4 — tight reprojection filter (safe with ALIKED+LightGlue)
-    _set_opt(opt.mapper, "filter_max_reproj_error", 2.0)  # default 4.0
+        # Optimization 4 — tight reprojection filter (safe with ALIKED+LightGlue)
+        _set_opt(opt.mapper, "filter_max_reproj_error", 2.0)  # default 4.0
 
     # Optimization 5 — all CPU cores
     opt.num_threads = -1

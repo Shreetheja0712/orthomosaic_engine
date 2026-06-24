@@ -138,8 +138,8 @@ def prepare_openmvs_workspace(
         sparse_dir = output_path / "sparse"
         sparse_dir.mkdir(exist_ok=True)
         colmap_sparse_dir = str(sparse_dir)
-        _export_reconstruction_to_colmap_text(reconstruction, str(sparse_dir))
-        logger.info("Exported COLMAP sparse model (TEXT) to %s", sparse_dir)
+        _export_reconstruction_to_colmap_safe_mvs(reconstruction, str(sparse_dir))
+        logger.info("Exported COLMAP sparse model to %s", sparse_dir)
 
     # ------------------------------------------------------------------ #
     # 3. Run InterfaceCOLMAP to produce the .mvs scene file
@@ -185,28 +185,27 @@ def _symlink_or_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
-def _export_reconstruction_to_colmap_text(reconstruction, sparse_dir: str) -> None:
+def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -> None:
     """
-    Write COLMAP text model files from a pycolmap.Reconstruction.
+    Write COLMAP model files from a pycolmap.Reconstruction.
 
-    Writes cameras.txt, images.txt, and points3D.txt to *sparse_dir*.
-    We export as TEXT rather than BINARY because OpenMVS InterfaceCOLMAP
-    crashes silently (exit 1) when parsing COLMAP 4.0+ binary models
-    (which introduced frames.bin and rigs.bin). The text parser in OpenMVS
-    is more robust and safely ignores the unsupported 4.0+ extensions.
-
-    Parameters
-    ----------
-    reconstruction : pycolmap.Reconstruction
-    sparse_dir : str
-        Target directory (must already exist).
+    OpenMVS InterfaceCOLMAP crashes silently (exit 1) when parsing COLMAP 4.0+
+    binary models if it encounters frames.bin and rigs.bin.
+    We write the model and explicitly delete these unsupported files.
     """
-    if hasattr(reconstruction, "write_text"):
-        reconstruction.write_text(sparse_dir)
-    else:
-        # Fallback for older pycolmap versions
+    if hasattr(reconstruction, "write"):
         reconstruction.write(sparse_dir)
-    logger.debug("Wrote COLMAP sparse model (TEXT) to %s", sparse_dir)
+    elif hasattr(reconstruction, "write_binary"):
+        reconstruction.write_binary(sparse_dir)
+    
+    # OpenMVS workaround: remove unsupported 4.0+ files
+    p = Path(sparse_dir)
+    for f in ["rigs.bin", "frames.bin", "rigs.txt", "frames.txt"]:
+        if (p / f).exists():
+            (p / f).unlink()
+            
+    logger.debug("Wrote COLMAP sparse model (OpenMVS-safe) to %s", sparse_dir)
+
 
 
 def _run_interface_colmap(

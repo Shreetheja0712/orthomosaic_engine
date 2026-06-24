@@ -38,6 +38,8 @@ def main():
                         help="Disable GPU (run on CPU only — much slower)")
     parser.add_argument("--n-neighbors", type=int, default=20,
                         help="GPS neighbors per image for feature matching (default 20)")
+    parser.add_argument("--default-colmap", action="store_true",
+                        help="Disable SfM optimisations (keyframe skipping, BA tuning, tight filters) and run with pure COLMAP defaults.")
     parser.add_argument(
         "--start-from-stage", type=int, default=1,
         choices=range(1, 13), metavar="N",
@@ -143,6 +145,11 @@ def main():
             sfm_keyframe_interval = 1
             print("[pipeline] Too few GPS captures to estimate overlap. Using interval=1, n_neighbors=20.")
 
+    if args.default_colmap:
+        print("\n[pipeline] ── Default COLMAP mode ──────────────────────────")
+        print("[pipeline]  --default-colmap passed. Disabling keyframe skipping.")
+        sfm_keyframe_interval = 1
+
     captures = filter_quality(captures)
     print(f"  {len(captures)} valid captures ready")
     stage_start = print_stage_time("Stage 1+2", stage_start)
@@ -190,6 +197,7 @@ def main():
             # repeatedly discard otherwise valid components when prior alignment
             # fails. Use it only for RTK; normal GPS is applied in final alignment.
             use_prior_position = has_rtk,
+            use_default_colmap = args.default_colmap,
         )
         if reconstruction is None:
             print("[pipeline] ERROR: SfM failed. Check GPS metadata and image overlap.")

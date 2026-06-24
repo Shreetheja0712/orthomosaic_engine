@@ -74,6 +74,7 @@ def run_sfm(
     has_rtk        : bool = False,
     keyframe_interval: int = 3,
     use_prior_position: bool = False,
+    use_default_colmap: bool = False,
 ) -> Optional[object]:
     """
     Full SfM pipeline — Steps 1-7.
@@ -120,7 +121,7 @@ def run_sfm(
     reconstruction = None
     path_used = None
 
-    if has_rtk:
+    if has_rtk and not use_default_colmap:
         print("\n[sfm] ── Step 3b: GLOMAP (fast path) ──")
         reconstruction = run_glomap(
             database_path = database_path,
@@ -147,6 +148,7 @@ def run_sfm(
             keyframes     = keyframes,
             init_pair     = init_pair,
             use_prior_position = use_prior_position,
+            use_default_colmap = use_default_colmap,
         )
         if reconstruction is not None:
             path_used = "COLMAP"
@@ -160,6 +162,7 @@ def run_sfm(
                 keyframes     = captures,
                 init_pair     = init_pair,
                 use_prior_position = use_prior_position,
+                use_default_colmap = use_default_colmap,
             )
             if reconstruction is not None:
                 path_used = "COLMAP-full"
