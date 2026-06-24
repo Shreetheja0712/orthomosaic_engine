@@ -7,6 +7,7 @@ import ssl
 ssl._create_default_https_context = ssl._create_unverified_context
 
 import argparse
+import math
 import time
 from pathlib import Path
 
@@ -92,7 +93,7 @@ def main():
             args.n_neighbors      = max(args.n_neighbors, ov.n_neighbors)
 
             print(f"\n[pipeline] ── Flight overlap estimate ────────────────────────")
-            print(f"[pipeline]  Altitude (median)   : {ov.footprint_m / (2.0 * __import__('math').tan(__import__('math').radians(40))):.0f} m")
+            print(f"[pipeline]  Altitude (median)   : {ov.footprint_m / (2.0 * math.tan(math.radians(40))):.0f} m")
             print(f"[pipeline]  Image footprint     : ~{ov.footprint_m:.0f} m")
             print(f"[pipeline]  Forward spacing     : {ov.forward_spacing_m:.1f} m  ->  {ov.forward_overlap*100:.0f}% forward overlap")
             print(f"[pipeline]  Side spacing        : {ov.side_spacing_m:.1f} m  ->  {ov.side_overlap*100:.0f}% side overlap")

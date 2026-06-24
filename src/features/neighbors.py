@@ -2,11 +2,11 @@
 GPS-based neighbor selection and flight-grid overlap estimation.
 
 Public API:
-  haversine_distance()   — ground distance between two GPS coords (meters)
-  estimate_overlap()     — analyse capture GPS to estimate forward/side overlap %
+  haversine_distance()   - ground distance between two GPS coords (meters)
+  estimate_overlap()     - analyse capture GPS to estimate forward/side overlap %
                            and derive safe SfM parameters (keyframe interval,
                            n_neighbors) automatically.
-  build_neighbor_pairs() — return unique matching pairs for feature matching
+  build_neighbor_pairs() - return unique matching pairs for feature matching
 """
 
 import math
@@ -20,7 +20,7 @@ from ..ingestion.capture import Capture
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     """
     Ground distance in meters between two WGS84 GPS coordinates.
-    Public — also used by src.sfm.keyframes for flight-path ordering.
+    Public - also used by src.sfm.keyframes for flight-path ordering.
     """
     R = 6_371_000  # Earth radius in meters
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
