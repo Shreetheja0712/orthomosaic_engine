@@ -194,7 +194,7 @@ def verify_matches_poselib(
     rej_solver_failed = 0   # PoseLib raised an exception
     rej_too_few_inliers = 0 # RANSAC found < 15 geometric inliers
 
-    for pair_id, n_matches, cols, data in pair_rows:
+    for loop_idx, (pair_id, n_matches, cols, data) in enumerate(pair_rows, start=1):
         # pair_id_to_image_pair is the version-correct inverse of whatever
         # encoding pycolmap.Database.write_matches() used to produce pair_id
         # in the first place — re-deriving the formula by hand is fragile
@@ -204,65 +204,71 @@ def verify_matches_poselib(
         if image_id_a not in image_camera or image_id_b not in image_camera:
             pairs_rejected += 1
             rej_no_camera += 1
-            continue
-
-        matches = np.frombuffer(data, dtype="uint32").reshape(n_matches, cols)
-        if len(matches) < 5:
+        elif len(np.frombuffer(data, dtype="uint32").reshape(n_matches, cols)) < 5:
             # Essential matrix needs minimum 5 correspondences
             pairs_rejected += 1
             rej_too_few_matches += 1
-            continue
+        else:
+            matches = np.frombuffer(data, dtype="uint32").reshape(n_matches, cols)
+            kpts_a = get_keypoints(image_id_a)
+            kpts_b = get_keypoints(image_id_b)
 
-        kpts_a = get_keypoints(image_id_a)
-        kpts_b = get_keypoints(image_id_b)
+            pts_a = kpts_a[matches[:, 0]]
+            pts_b = kpts_b[matches[:, 1]]
 
-        pts_a = kpts_a[matches[:, 0]]
-        pts_b = kpts_b[matches[:, 1]]
+            cam_a = get_poselib_camera(image_id_a)
+            cam_b = get_poselib_camera(image_id_b)
 
-        cam_a = get_poselib_camera(image_id_a)
-        cam_b = get_poselib_camera(image_id_b)
+            try:
+                pose, info = poselib.estimate_relative_pose(
+                    pts_a, pts_b, cam_a, cam_b, ransac_opt=opts
+                )
+            except Exception:
+                pairs_rejected += 1
+                rej_solver_failed += 1
+            else:
+                inlier_mask = np.asarray(info.get("inliers", []), dtype=bool)
+                n_inliers = int(inlier_mask.sum()) if inlier_mask.size else 0
 
-        try:
-            pose, info = poselib.estimate_relative_pose(
-                pts_a, pts_b, cam_a, cam_b, ransac_opt=opts
-            )
-        except Exception:
-            pairs_rejected += 1
-            rej_solver_failed += 1
-            continue
+                if n_inliers < 15:
+                    # Reject pairs PoseLib could not confidently verify.
+                    pairs_rejected += 1
+                    rej_too_few_inliers += 1
+                else:
+                    inlier_matches = matches[inlier_mask].astype("uint32")
+                    pose_blobs = _pack_pose_blobs(pose)
 
-        inlier_mask = np.asarray(info.get("inliers", []), dtype=bool)
-        n_inliers = int(inlier_mask.sum()) if inlier_mask.size else 0
+                    cur.execute(
+                        "INSERT OR REPLACE INTO two_view_geometries "
+                        "(pair_id, rows, cols, data, config, F, E, H, qvec, tvec) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (
+                            pair_id,
+                            len(inlier_matches),
+                            2,
+                            _pack_matches(inlier_matches),
+                            CONFIG_CALIBRATED,
+                            None,            # F not computed in the calibrated path
+                            None,            # E not exposed directly by estimate_relative_pose
+                            None,            # H not applicable (non-planar config)
+                            pose_blobs["qvec"],
+                            pose_blobs["tvec"],
+                        ),
+                    )
 
-        # Reject pairs PoseLib could not confidently verify.
-        if n_inliers < 15:
-            pairs_rejected += 1
-            rej_too_few_inliers += 1
-            continue
+                    pairs_verified += 1
+                    total_inliers += n_inliers
 
-        inlier_matches = matches[inlier_mask].astype("uint32")
-        pose_blobs = _pack_pose_blobs(pose)
-
-        cur.execute(
-            "INSERT OR REPLACE INTO two_view_geometries "
-            "(pair_id, rows, cols, data, config, F, E, H, qvec, tvec) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?)",
-            (
-                pair_id,
-                len(inlier_matches),
-                2,
-                _pack_matches(inlier_matches),
-                CONFIG_CALIBRATED,
-                None,            # F not computed in the calibrated path
-                None,            # E not exposed directly by estimate_relative_pose
-                None,            # H not applicable (non-planar config)
-                pose_blobs["qvec"],
-                pose_blobs["tvec"],
-            ),
-        )
-
-        pairs_verified += 1
-        total_inliers += n_inliers
+        # ── Progress: every 500 pairs regardless of outcome ──────────────────
+        if loop_idx % 500 == 0:
+            elapsed_now = time.perf_counter() - t0
+            pct   = 100.0 * loop_idx / len(pair_rows)
+            speed = elapsed_now / loop_idx
+            eta   = speed * (len(pair_rows) - loop_idx)
+            inlier_rate = total_inliers / max(pairs_verified, 1)
+            print(f"[geometric_verification] {loop_idx}/{len(pair_rows)} ({pct:.0f}%)  "
+                  f"elapsed: {elapsed_now:.0f}s  ETA: {eta:.0f}s  "
+                  f"verified: {pairs_verified}  avg inliers/pair: {inlier_rate:.0f}")
 
     conn.commit()
     conn.close()

@@ -218,10 +218,16 @@ def match_features(
             total_matches += len(match_array)
             matched_pairs += 1
 
-            if (idx + 1) % 500 == 0 or (idx + 1) == len(pairs):
+            if (idx + 1) % 100 == 0 or (idx + 1) == len(pairs):
                 elapsed = time.perf_counter() - t0
-                print(f"[matcher] {idx + 1}/{len(pairs)}  "
-                      f"({elapsed:.1f}s)  matches so far: {total_matches}")
+                done    = idx + 1
+                pct     = 100.0 * done / len(pairs)
+                speed   = elapsed / done
+                eta     = speed * (len(pairs) - done)
+                avg_m   = total_matches / max(matched_pairs, 1)
+                print(f"[matcher] {done}/{len(pairs)} ({pct:.0f}%)  "
+                      f"elapsed: {elapsed:.0f}s  ETA: {eta:.0f}s  "
+                      f"matched pairs: {matched_pairs}  avg matches/pair: {avg_m:.0f}")
 
     elapsed = time.perf_counter() - t0
     print("[matcher] Done.")

@@ -90,13 +90,21 @@ def run_rgb_mosaic(
     peak RAM usage is typically 4–8 GB. Chunked/tiled canvas processing
     is a future improvement (see mosaicking.md §Memory).
     """
+    import time as _time
+    t0_mosaic = _time.perf_counter()
+
     logger.info("run_rgb_mosaic: starting with %d tiles", len(tile_paths))
+    print(f"[mosaic/rgb] Stage 11 — RGB mosaicking  ({len(tile_paths)} tiles)")
 
+    print(f"[mosaic/rgb] Step 1/7  Reading tile metadata...")
     tile_infos = read_tile_infos(tile_paths)
+    print(f"[mosaic/rgb] Step 2/7  Computing canvas...  ({_time.perf_counter()-t0_mosaic:.0f}s)")
     canvas = compute_mosaic_canvas(tile_infos, target_gsd_m)
+    print(f"[mosaic/rgb]           Canvas: {canvas.width_px}×{canvas.height_px} px")
 
+    print(f"[mosaic/rgb] Step 3/7  Loading + vignetting correction...  ({_time.perf_counter()-t0_mosaic:.0f}s)")
     images: List[np.ndarray] = []
-    for ti in tile_infos:
+    for ti_idx, ti in enumerate(tile_infos, start=1):
         img = load_tile_pixels(ti)
         try:
             exif_dict = _read_exif_dict(ti.path)
@@ -109,19 +117,26 @@ def run_rgb_mosaic(
             coeffs = read_vignetting_coeffs({})
         img = correct_vignetting_rgb(img, coeffs)
         images.append(img)
+        if ti_idx % 100 == 0 or ti_idx == len(tile_infos):
+            elapsed = _time.perf_counter() - t0_mosaic
+            print(f"[mosaic/rgb]   vignetting {ti_idx}/{len(tile_infos)} ({100*ti_idx//len(tile_infos)}%)  elapsed: {elapsed:.0f}s")
 
     logger.info("run_rgb_mosaic: vignetting-corrected %d tiles", len(images))
 
+    print(f"[mosaic/rgb] Step 4/7  Gain compensation...  ({_time.perf_counter()-t0_mosaic:.0f}s)")
     gain_images = compute_gain_maps(tile_infos, images, canvas)
     logger.info("run_rgb_mosaic: gain compensation done")
 
+    print(f"[mosaic/rgb] Step 5/7  Finding seamlines...  ({_time.perf_counter()-t0_mosaic:.0f}s)")
     seamline_set = find_seamlines(tile_infos, gain_images, canvas)
     seamlines_path = save_seamlines(seamline_set, seamlines_save_dir)
     logger.info("run_rgb_mosaic: seamlines saved to %s", seamlines_path)
 
+    print(f"[mosaic/rgb] Step 6/7  Blending mosaic...  ({_time.perf_counter()-t0_mosaic:.0f}s)")
     mosaic = blend_rgb_mosaic(tile_infos, gain_images, seamline_set, canvas)
     logger.info("run_rgb_mosaic: blending done, writing output")
 
+    print(f"[mosaic/rgb] Step 7/7  Writing GeoTIFF...  ({_time.perf_counter()-t0_mosaic:.0f}s)")
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
     with rasterio.open(
         output_path,
@@ -138,7 +153,9 @@ def run_rgb_mosaic(
         for band_idx in range(3):
             dst.write(mosaic[:, :, band_idx], band_idx + 1)
 
+    total_elapsed = _time.perf_counter() - t0_mosaic
     logger.info("run_rgb_mosaic: wrote %s", output_path)
+    print(f"[mosaic/rgb] Done. Total time: {total_elapsed:.0f}s  Output: {output_path}")
     return output_path, seamline_set
 
 
@@ -167,20 +184,27 @@ def run_ms_mosaic(
     `target_gsd_m` MUST match the value used in run_rgb_mosaic() — the
     reused seamline_set was computed on that canvas grid.
     """
+    import time as _time
+    t0_ms = _time.perf_counter()
+
     missing_bands = [b for b in _MS_BAND_ORDER if b not in multi_tile_paths]
     if missing_bands:
         raise ValueError(f"run_ms_mosaic: missing tile paths for band(s) {missing_bands}")
 
     known_reflectances = known_reflectances or dict(_DEFAULT_KNOWN_REFLECTANCES)
 
+    print(f"[mosaic/ms] Stage 12 — Multispectral mosaicking  ({len(_MS_BAND_ORDER)} bands)")
     logger.info("run_ms_mosaic: computing panel calibration factors")
+    print(f"[mosaic/ms] Computing panel calibration factors...")
     panel_factors = compute_mission_panel_factors(captures, known_reflectances)
 
     canvas: Optional[CanvasInfo] = None
     band_mosaics: Dict[str, np.ndarray] = {}
 
-    for band_name in _MS_BAND_ORDER:
+    for band_num, band_name in enumerate(_MS_BAND_ORDER, start=1):
         band_paths = multi_tile_paths[band_name]
+        print(f"[mosaic/ms] Band {band_num}/{len(_MS_BAND_ORDER)}: {band_name}  "
+              f"({len(band_paths)} tiles)  elapsed: {_time.perf_counter()-t0_ms:.0f}s")
         logger.info("run_ms_mosaic: processing band %s (%d tiles)", band_name, len(band_paths))
 
         tile_infos = read_tile_infos(band_paths)
@@ -196,7 +220,7 @@ def run_ms_mosaic(
             )
 
         calibrated_tiles: List[np.ndarray] = []
-        for ti in tile_infos:
+        for ti_idx, ti in enumerate(tile_infos, start=1):
             band_img = load_tile_pixels(ti)  # (H, W) float32 raw DN
             try:
                 exif_dict = _read_exif_dict(ti.path)
@@ -218,6 +242,11 @@ def run_ms_mosaic(
             band_img = calibrate_image(band_img, exif_dict, panel_factors, band_name)
             calibrated_tiles.append(band_img)
 
+            if ti_idx % 100 == 0 or ti_idx == len(tile_infos):
+                elapsed = _time.perf_counter() - t0_ms
+                print(f"[mosaic/ms]   {band_name} calibrated {ti_idx}/{len(tile_infos)} "
+                      f"({100*ti_idx//len(tile_infos)}%)  elapsed: {elapsed:.0f}s")
+
         if len(tile_infos) != len(seamline_set.masks):
             logger.warning(
                 "run_ms_mosaic: band %s has %d tiles but seamline_set has %d masks — "
@@ -227,6 +256,7 @@ def run_ms_mosaic(
                 band_name, len(tile_infos), len(seamline_set.masks),
             )
 
+        print(f"[mosaic/ms]   {band_name} blending...  elapsed: {_time.perf_counter()-t0_ms:.0f}s")
         band_mosaic = blend_ms_mosaic(tile_infos, calibrated_tiles, seamline_set, canvas)
         band_mosaics[band_name] = band_mosaic
         logger.info("run_ms_mosaic: band %s blended", band_name)
@@ -240,6 +270,7 @@ def run_ms_mosaic(
             "Check that run_ortho_pipeline() wrote multispectral tiles before calling run_ms_mosaic()."
         )
 
+    print(f"[mosaic/ms] Stacking bands + writing GeoTIFF...  elapsed: {_time.perf_counter()-t0_ms:.0f}s")
     stacked = stack_ms_bands(band_mosaics, band_order=_MS_BAND_ORDER)
 
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
@@ -261,5 +292,7 @@ def run_ms_mosaic(
             dst.write(stacked[band_idx], band_idx + 1)
             dst.set_band_description(band_idx + 1, band_descriptions[band_idx])
 
+    total_elapsed = _time.perf_counter() - t0_ms
     logger.info("run_ms_mosaic: wrote %s", output_path)
+    print(f"[mosaic/ms] Done. Total time: {total_elapsed:.0f}s  Output: {output_path}")
     return output_path

@@ -179,10 +179,15 @@ def extract_features(
 
         _save_features(h5_path, kpts, desc, (orig_w, orig_h))
 
-        if (idx + 1) % 50 == 0 or (idx + 1) == len(captures):
+        if (idx + 1) % 10 == 0 or (idx + 1) == len(captures):
             elapsed = time.perf_counter() - t0
-            print(f"[extractor] {idx + 1}/{len(captures)}  "
-                  f"({elapsed:.1f}s)  last: {cap.capture_id}  kpts: {len(kpts)}")
+            done    = idx + 1
+            pct     = 100.0 * done / len(captures)
+            speed   = elapsed / done          # s/image
+            eta     = speed * (len(captures) - done)
+            print(f"[extractor] {done}/{len(captures)} ({pct:.0f}%)  "
+                  f"elapsed: {elapsed:.0f}s  ETA: {eta:.0f}s  "
+                  f"speed: {speed:.2f}s/img  last: {cap.capture_id}  kpts: {len(kpts)}")
 
     elapsed = time.perf_counter() - t0
     extracted = len(captures) - skipped
