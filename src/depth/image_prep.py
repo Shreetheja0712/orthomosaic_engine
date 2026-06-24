@@ -192,42 +192,30 @@ def _symlink_or_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
+from .text_export import write_colmap_text
+
 def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -> None:
     """
-    Write COLMAP model files from a pycolmap.Reconstruction.
-
+    Write COLMAP text model files from a pycolmap.Reconstruction using a custom Python exporter.
+    
     OpenMVS InterfaceCOLMAP crashes silently (exit 1) when parsing COLMAP 4.0+
-    binary models if it encounters frames.bin and rigs.bin.
-    We write the model and explicitly delete these unsupported files.
+    binary models due to structural changes like pose_prior. Deleting unsupported
+    files like frames.bin is not enough because images.bin itself changed.
+    
+    We bypass this completely by writing pure legacy text format directly from Python.
     """
-    if hasattr(reconstruction, "write"):
-        reconstruction.write(sparse_dir)
-    elif hasattr(reconstruction, "write_binary"):
-        reconstruction.write_binary(sparse_dir)
-
-    # OpenMVS workaround: remove unsupported 4.0+ files
+    # 1. Ensure the directory is completely empty
     p = Path(sparse_dir)
-    removed = []
-    for f in ["rigs.bin", "frames.bin", "rigs.txt", "frames.txt"]:
-        if (p / f).exists():
-            (p / f).unlink()
-            removed.append(f)
-
-    # Verify the cleanup actually took — if these reappear (e.g. something
-    # else recreated them, or unlink silently failed on some filesystem),
-    # fail loudly here instead of letting InterfaceCOLMAP crash later with
-    # an opaque "exit 1" and empty stdout/stderr.
-    still_present = [f for f in ["rigs.bin", "frames.bin"] if (p / f).exists()]
-    if still_present:
-        raise RuntimeError(
-            f"OpenMVS-incompatible files still present in {sparse_dir} after "
-            f"cleanup: {still_present}. Remove this directory manually and "
-            f"re-run Stage 8."
-        )
-
+    for f in p.iterdir():
+        if f.is_file():
+            f.unlink()
+            
+    # 2. Write custom text format
+    write_colmap_text(reconstruction, sparse_dir)
+    
     logger.debug(
-        "Wrote COLMAP sparse model (OpenMVS-safe) to %s (removed: %s)",
-        sparse_dir, removed or "none present",
+        "Wrote COLMAP sparse model (OpenMVS-safe custom TEXT) to %s",
+        sparse_dir
     )
 
 
