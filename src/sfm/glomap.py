@@ -43,15 +43,18 @@ MIN_BBOX_COVERAGE_RATIO  = 0.90   # reconstruction must cover >90% of GPS span
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
+def _get_num_reg_images(recon) -> int:
+    val = recon.num_reg_images
+    return int(val() if callable(val) else val)
+
 def _best_reconstruction(reconstructions: dict) -> Optional[object]:
     """
-    Pick the largest reconstruction from global_mapping output.
-    global_mapping returns dict[int, Reconstruction] keyed by model index.
+    Pick the largest disconnected component returned by GLOMAP.
     Best = most registered images.
     """
     if not reconstructions:
         return None
-    return max(reconstructions.values(), key=lambda r: r.num_reg_images)
+    return max(reconstructions.values(), key=_get_num_reg_images)
 
 
 def _gps_to_ecef(lat: float, lon: float, alt: float) -> np.ndarray:
@@ -243,7 +246,7 @@ def validate_glomap_reconstruction(
         bounding box of the input captures?
         A folded field would show ~50% coverage — both halves overlap.
     """
-    n_reg   = reconstruction.num_reg_images
+    n_reg   = _get_num_reg_images(reconstruction)
     n_total = len(keyframes)
 
     # ── Check 1: Registration ratio ───────────────────────────────────────────
@@ -379,7 +382,7 @@ def run_glomap(
         print("[glomap] GLOMAP produced no reconstruction.")
         return None
 
-    print(f"[glomap] GLOMAP registered {recon.num_reg_images} images. Validating...")
+    print(f"[glomap] GLOMAP registered {_get_num_reg_images(recon)} images. Validating...")
 
     passed, reason = validate_glomap_reconstruction(
         recon, keyframes, has_rtk=has_rtk

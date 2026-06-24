@@ -60,10 +60,15 @@ from ..colmap_images import colmap_image_name
 from ..ingestion.capture import Capture
 
 
+def _get_num_reg_images(recon) -> int:
+    val = recon.num_reg_images
+    return int(val() if callable(val) else val)
+
+
 def _best_reconstruction(reconstructions: dict) -> Optional[object]:
     if not reconstructions:
         return None
-    return max(reconstructions.values(), key=lambda r: r.num_reg_images)
+    return max(reconstructions.values(), key=_get_num_reg_images)
 
 
 def _set_opt(obj, name: str, value) -> bool:
@@ -338,6 +343,16 @@ def run_colmap_incremental(
     # If you still get 5 components → increase --n-neighbors.
     _set_opt(opt, "max_num_models", 5)
 
+    # min_model_size=3: COLMAP sometimes picks a bad seed pair on its first
+    # attempt and grows a tiny 2-image component which it then discards as
+    # "insufficient size" (creating empty folders 0/, 1/, 2/, …).
+    # Setting this to 3 means only components with ≥3 images are kept, which
+    # avoids the discard-loop while still filtering truly degenerate seeds.
+    # The default COLMAP value is 10, which is too high and causes visible
+    # "discarding reconstruction due to insufficient size" log spam even when
+    # connectivity is 99%.
+    _set_opt(opt, "min_model_size", 3)
+
     # min_num_matches: keep at COLMAP default (15 verified inliers minimum).
     # Do NOT lower this — borderline pairs hurt bundle adjustment accuracy.
     # The fix for disconnected graphs is more neighbors (--n-neighbors 20),
@@ -350,12 +365,24 @@ def run_colmap_incremental(
         print(f"[colmap] Warning: use_prior_position not available in this pycolmap build; "
               f"GPS pose priors will not be enforced during incremental mapping.")
 
-    # GPS-guided init pair is diagnostic-only by default.
+    # GPS-guided init pair — force it when connectivity is high (≥95%).
     #
-    # A GPS baseline can be physically sensible yet still be unsuitable for
-    # COLMAP's two-view initializer, especially for nadir/near-planar fields.
-    # Forcing init_image_id1/2 makes COLMAP repeatedly try that pair and discard
-    # the reconstruction. Leaving them unset lets COLMAP rank all verified pairs.
+    # With 99% connectivity the graph is well-connected and the GPS centroid
+    # pair is a physically meaningful baseline.  Forcing it means COLMAP starts
+    # from a good seed immediately instead of cycling through bad seeds, which
+    # is what causes the "discarding reconstruction due to insufficient size"
+    # log spam and the empty 0/, 1/, 2/ output folders.
+    #
+    # We only force the pair when:
+    #   a) pct_matched >= 95% (high-connectivity mission — seed choice matters)
+    #   b) the pair has verified two-view geometry in the DB
+    #   c) stats is not None (connectivity check ran)
+    _force_init = (
+        stats is not None
+        and pct_matched >= 95.0
+        and init_pair is not None
+    )
+
     if init_pair is not None:
         db = pycolmap.Database.open(str(database_path))
         id1 = _resolve_image_id(db, init_pair[0])
@@ -363,10 +390,22 @@ def run_colmap_incremental(
         db.close()
 
         if id1 is not None and id2 is not None and _has_verified_pair(database_path, id1, id2):
-            print(f"[colmap] GPS-guided init pair is verified but will not be forced: "
-                  f"{init_pair[0].capture_id} (id={id1}) <-> "
-                  f"{init_pair[1].capture_id} (id={id2}). "
-                  "COLMAP will select the best init pair.")
+            if _force_init:
+                # Force the GPS init pair — eliminates the bad-seed discard loop.
+                if _set_opt(opt, "init_image_id1", id1) and _set_opt(opt, "init_image_id2", id2):
+                    print(f"[colmap] Forcing GPS-guided init pair "
+                          f"{init_pair[0].capture_id} (id={id1}) <-> "
+                          f"{init_pair[1].capture_id} (id={id2}) "
+                          f"(connectivity {pct_matched:.0f}% ≥ 95% → seed quality guaranteed).")
+                else:
+                    print(f"[colmap] GPS-guided init pair could not be set (pycolmap version). "
+                          "COLMAP will select its own init pair.")
+            else:
+                print(f"[colmap] GPS-guided init pair verified but not forced "
+                      f"(connectivity {pct_matched:.0f}% < 95%): "
+                      f"{init_pair[0].capture_id} (id={id1}) <-> "
+                      f"{init_pair[1].capture_id} (id={id2}). "
+                      "COLMAP will select the best init pair.")
         elif id1 is not None and id2 is not None:
             print("[colmap] Warning: GPS-guided init pair has no verified geometry. "
                   "COLMAP will select its own init pair.")
@@ -406,13 +445,13 @@ def run_colmap_incremental(
     if len(reconstructions) > 1:
         print(f"[colmap] WARNING: mapper produced {len(reconstructions)} sub-reconstructions "
               f"(disconnected graph). Sizes:")
-        for idx, r in sorted(reconstructions.items(), key=lambda kv: -kv[1].num_reg_images):
-            print(f"[colmap]   component {idx}: {r.num_reg_images} images registered")
-        print(f"[colmap] Using the largest: component with {recon.num_reg_images} images.")
+        for idx, r in sorted(reconstructions.items(), key=lambda kv: -_get_num_reg_images(kv[1])):
+            print(f"[colmap]   component {idx}: {_get_num_reg_images(r)} images registered")
+        print(f"[colmap] Using the largest: component with {_get_num_reg_images(recon)} images.")
         print(f"[colmap] ACTION NEEDED: re-run from stage 4 with --n-neighbors 20 or higher")
         print(f"[colmap]   to connect all image clusters into a single reconstruction.")
 
-    n_reg   = recon.num_reg_images
+    n_reg   = _get_num_reg_images(recon)
     n_total = len(keyframes)
     print(f"[colmap] Registered {n_reg}/{n_total} keyframes "
           f"({n_reg/n_total*100:.1f}%)")

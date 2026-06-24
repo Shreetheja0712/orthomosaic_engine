@@ -51,7 +51,8 @@ def run_final_bundle_adjustment(reconstruction) -> None:
     """
     import pycolmap
 
-    n_images = reconstruction.num_reg_images
+    n_images_val = reconstruction.num_reg_images
+    n_images = int(n_images_val() if callable(n_images_val) else n_images_val)
     n_points = len(reconstruction.points3D)
 
     print(f"[final_ba] Running final BA over {n_images} images, "

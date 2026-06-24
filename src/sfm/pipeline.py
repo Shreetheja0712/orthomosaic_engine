@@ -185,7 +185,8 @@ def run_sfm(
     _write_final_reconstruction(reconstruction, output_path)
 
     # ── Summary ───────────────────────────────────────────────────────────────
-    n_reg    = reconstruction.num_reg_images
+    n_reg_val = reconstruction.num_reg_images
+    n_reg = int(n_reg_val() if callable(n_reg_val) else n_reg_val)
     n_total  = len(captures)
     if hasattr(reconstruction, "num_points3D"):
         n_points = reconstruction.num_points3D() if callable(reconstruction.num_points3D) else reconstruction.num_points3D
