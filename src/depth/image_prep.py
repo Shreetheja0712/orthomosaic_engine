@@ -196,13 +196,13 @@ from .text_export import write_colmap_text
 
 def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -> None:
     """
-    Write COLMAP text model files from a pycolmap.Reconstruction using a custom Python exporter.
+    Write COLMAP text model files from a pycolmap.Reconstruction.
     
     OpenMVS InterfaceCOLMAP crashes silently (exit 1) when parsing COLMAP 4.0+
     binary models due to structural changes like pose_prior. Deleting unsupported
     files like frames.bin is not enough because images.bin itself changed.
     
-    We bypass this completely by writing pure legacy text format directly from Python.
+    We bypass this by writing legacy text format and removing frames/rigs files.
     """
     # 1. Ensure the directory is completely empty
     p = Path(sparse_dir)
@@ -210,9 +210,20 @@ def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -
         if f.is_file():
             f.unlink()
             
-    # 2. Write custom text format
-    write_colmap_text(reconstruction, sparse_dir)
-    
+    # 2. Write text format
+    if hasattr(reconstruction, "write_text"):
+        logger.debug("Writing COLMAP sparse model using pycolmap.Reconstruction.write_text")
+        reconstruction.write_text(sparse_dir)
+    else:
+        logger.debug("Writing COLMAP sparse model using custom Python write_colmap_text")
+        write_colmap_text(reconstruction, sparse_dir)
+
+    # 3. Delete unsupported files for OpenMVS compatibility
+    for f in ["rigs.txt", "frames.txt", "rigs.bin", "frames.bin"]:
+        file_path = p / f
+        if file_path.exists():
+            file_path.unlink()
+            
     logger.debug(
         "Wrote COLMAP sparse model (OpenMVS-safe custom TEXT) to %s",
         sparse_dir
