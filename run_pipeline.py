@@ -67,23 +67,42 @@ def main():
     stage_start = time.time()
     captures = load_mission(mission_dir)
 
-    # Detect if GPS is completely missing from EXIF
-    # interval=3 is correct at 80% overlap: every ground point still visible
-    # in 8+ keyframes, SfM runs 3x faster. The disconnected-graph failure
-    # seen earlier was caused by max_epipolar_error=1.5px in geometric
-    # verification being too tight (now fixed to 3.0px), NOT by this interval.
-    sfm_keyframe_interval = 1
+    # ── Overlap estimation + dynamic SfM parameter selection ─────────────────
     has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
+
     if not has_any_gps:
-        print("\n[pipeline] WARNING: No GPS metadata found in any image EXIF.")
-        print("[pipeline] Automatically generating sequential mock GPS coordinates to allow relative reconstruction.")
-        print("[pipeline] Matching will fall back to EXHAUSTIVE to ensure correct stitching without GPS.")
+        # No GPS in EXIF — generate a synthetic grid so the rest of the pipeline
+        # can run in sequential / relative mode.
+        print("\n[pipeline] WARNING: No GPS in EXIF. Generating synthetic coordinates for relative reconstruction.")
         for i, cap in enumerate(captures):
-            cap.latitude = 45.0 + i * 0.000045  # spacing of approx 5 meters
+            cap.latitude  = 45.0 + i * 0.000045   # ~5 m spacing
             cap.longitude = 9.0
-            cap.altitude = 120.0
-        args.n_neighbors = len(captures)
-        sfm_keyframe_interval = 1  # no GPS ordering → use all images
+            cap.altitude  = 120.0
+        sfm_keyframe_interval = 1
+        args.n_neighbors = len(captures)   # exhaustive matching (no GPS filter)
+        print(f"[pipeline] No-GPS mode: using all {args.n_neighbors} captures as neighbors.")
+    else:
+        from src.features.neighbors import estimate_overlap
+        ov = estimate_overlap(captures)
+
+        if ov.footprint_m > 0:
+            # Use the recommended values from the overlap estimator, but
+            # never go below what the user explicitly requested on the CLI.
+            sfm_keyframe_interval = ov.keyframe_interval
+            args.n_neighbors      = max(args.n_neighbors, ov.n_neighbors)
+
+            print(f"\n[pipeline] ── Flight overlap estimate ────────────────────────")
+            print(f"[pipeline]  Altitude (median)   : {ov.footprint_m / (2.0 * __import__('math').tan(__import__('math').radians(40))):.0f} m")
+            print(f"[pipeline]  Image footprint     : ~{ov.footprint_m:.0f} m")
+            print(f"[pipeline]  Forward spacing     : {ov.forward_spacing_m:.1f} m  ->  {ov.forward_overlap*100:.0f}% forward overlap")
+            print(f"[pipeline]  Side spacing        : {ov.side_spacing_m:.1f} m  ->  {ov.side_overlap*100:.0f}% side overlap")
+            print(f"[pipeline]  Keyframe interval   : {sfm_keyframe_interval}  (every {sfm_keyframe_interval}{'rd' if sfm_keyframe_interval==3 else 'nd' if sfm_keyframe_interval==2 else 'st'} image used for SfM)")
+            print(f"[pipeline]  n_neighbors         : {args.n_neighbors}")
+            print(f"[pipeline] ──────────────────────────────────────────────────────")
+        else:
+            # Not enough GPS captures to estimate (< 20) — use safe defaults
+            sfm_keyframe_interval = 1
+            print("[pipeline] Too few GPS captures to estimate overlap. Using interval=1, n_neighbors=20.")
 
     captures = filter_quality(captures)
     print(f"  {len(captures)} valid captures ready")
@@ -91,47 +110,47 @@ def main():
 
     # ── Stage 3: Feature extraction ───────────────────────────────────────────
     if start <= 3:
-        print("\n=== Stage 3: Feature Extraction (ALIKED) ===")
+        print(f"\n=== Stage 3: Feature Extraction (ALIKED) ===")
         extract_features(captures, output_dir=str(output_dir), use_gpu=use_gpu)
         stage_start = print_stage_time("Stage 3", stage_start)
     else:
-        print(f"\n=== Stage 3: Feature Extraction — SKIPPED (start-from-stage={start}) ===")
+        print(f"\n=== Stage 3: Feature Extraction — SKIPPED ===")
 
     # ── Stage 4: Feature matching ─────────────────────────────────────────────
     if start <= 4:
-        print("\n=== Stage 4: Feature Matching (LightGlue) ===")
+        print(f"\n=== Stage 4: Feature Matching (LightGlue, n_neighbors={args.n_neighbors}) ===")
         match_features(captures, output_dir=str(output_dir), n_neighbors=args.n_neighbors, use_gpu=use_gpu)
         stage_start = print_stage_time("Stage 4", stage_start)
     else:
-        print(f"\n=== Stage 4: Feature Matching — SKIPPED (start-from-stage={start}) ===")
+        print(f"\n=== Stage 4: Feature Matching — SKIPPED ===")
 
     # ── Stage 5: DB import + Geometric verification ───────────────────────────
     if start <= 5:
-        print("\n=== Stage 5: Geometric Verification (PoseLib) ===")
+        print(f"\n=== Stage 5: DB Import + Geometric Verification (PoseLib) ===")
         db_path = import_to_colmap(captures, output_dir=str(output_dir))
         stage_start = print_stage_time("Stage 5", stage_start)
     else:
-        print(f"\n=== Stage 5: DB Import + Geometric Verification — SKIPPED (start-from-stage={start}) ===")
+        print(f"\n=== Stage 5: DB Import + Geometric Verification — SKIPPED ===")
         db_path = output_dir / "database.db"
         if not db_path.exists():
-            print(f"ERROR: database.db not found at {db_path}. Run from stage 5 or earlier first.")
+            print(f"[pipeline] ERROR: database.db not found at {db_path}. Run from stage 5 or earlier.")
             return
-        print(f"  Using existing database: {db_path}")
+        print(f"[pipeline] Using existing database: {db_path}")
 
     # ── Stage 6+7: SfM + Georeferencing ──────────────────────────────────────
     if start <= 7:
-        print("\n=== Stage 6+7: SfM Mapping + Georeferencing (COLMAP) ===")
+        print(f"\n=== Stage 6+7: SfM Mapping + Georeferencing (keyframe_interval={sfm_keyframe_interval}) ===")
         reconstruction = run_sfm(
-            database_path = str(db_path),
-            image_dir     = str(Path(mission_dir) / "rgb"),
-            output_dir    = str(output_dir / "sparse"),
-            captures      = captures,
-            has_rtk       = args.rtk,
-            keyframe_interval = sfm_keyframe_interval,
+            database_path      = str(db_path),
+            image_dir          = str(Path(mission_dir) / "rgb"),
+            output_dir         = str(output_dir / "sparse"),
+            captures           = captures,
+            has_rtk            = args.rtk,
+            keyframe_interval  = sfm_keyframe_interval,
             use_prior_position = has_any_gps,
         )
         if reconstruction is None:
-            print("ERROR: SfM failed. Check your images have GPS and enough overlap.")
+            print("[pipeline] ERROR: SfM failed. Check GPS metadata and image overlap.")
             return
         stage_start = print_stage_time("Stage 6+7", stage_start)
     else:

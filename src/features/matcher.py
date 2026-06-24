@@ -105,7 +105,7 @@ def _append_matches(
 def match_features(
     captures: List[Capture],
     output_dir: str,
-    n_neighbors: int = 8,
+    n_neighbors: int = 20,
     use_gpu: bool = True,
 ) -> Path:
     """
@@ -117,7 +117,8 @@ def match_features(
     Args:
         captures    : Capture list from ingestion (same order as extraction)
         output_dir  : same root dir passed to extract_features()
-        n_neighbors : GPS neighbors per image  (default 8, use 12 for >80% overlap)
+        n_neighbors : GPS neighbors per image. Set automatically from overlap
+                      estimation in run_pipeline.py; 20 is the safe default.
         use_gpu     : use CUDA when available
 
     Returns:
@@ -229,13 +230,11 @@ def match_features(
                       f"elapsed: {elapsed:.0f}s  ETA: {eta:.0f}s  "
                       f"matched pairs: {matched_pairs}  avg matches/pair: {avg_m:.0f}")
 
-    elapsed = time.perf_counter() - t0
-    print("[matcher] Done.")
-    print(f"[matcher] Pairs matched  : {matched_pairs}")
-    print(f"[matcher] Pairs skipped  : {skipped_pairs}  (missing features or zero inliers)")
-    print(f"[matcher] Total matches  : {total_matches}")
-    print(f"[matcher] Time           : {elapsed:.1f}s  "
-          f"({elapsed / max(matched_pairs, 1):.3f}s/pair)")
-    print(f"[matcher] Output         : {matches_path}")
+    elapsed   = time.perf_counter() - t0
+    avg_m     = total_matches / max(matched_pairs, 1)
+    match_pct = 100.0 * matched_pairs / max(len(pairs), 1)
+    print(f"[matcher] Done — {matched_pairs}/{len(pairs)} pairs matched ({match_pct:.0f}%)  "
+          f"skipped: {skipped_pairs}  total matches: {total_matches}  "
+          f"avg: {avg_m:.0f}/pair  time: {elapsed:.1f}s")
 
     return matches_path

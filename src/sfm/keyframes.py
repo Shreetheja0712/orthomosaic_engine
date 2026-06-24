@@ -43,39 +43,48 @@ def _order_by_flight_path(captures: List[Capture]) -> List[Capture]:
         return list(gps_captures)
 
     import numpy as np
-    
-    # Extract coordinates
-    lats = np.array([c.latitude for c in gps_captures])
+
+    lats = np.array([c.latitude  for c in gps_captures])
     lons = np.array([c.longitude for c in gps_captures])
-    
-    # Start from the capture with the smallest (lat + lon)
-    start_idx = np.argmin(lats + lons)
-    
+
+    # Start from the capture nearest to the min-lat/min-lon geographic corner.
+    # Using argmin(lats + lons) is wrong for the southern hemisphere where
+    # latitudes are negative — the sum produces the wrong corner there.
+    # Instead: find the closest capture to the bounding-box SW corner via
+    # haversine so the arithmetic is geometrically correct everywhere.
+    sw_lat, sw_lon = float(lats.min()), float(lons.min())
+    start_idx = int(
+        min(
+            range(len(gps_captures)),
+            key=lambda i: _haversine_distance(
+                sw_lat, sw_lon,
+                gps_captures[i].latitude, gps_captures[i].longitude,
+            ),
+        )
+    )
+
     ordered = [gps_captures[start_idx]]
     current_idx = start_idx
-    
+
     unvisited = np.ones(len(gps_captures), dtype=bool)
     unvisited[current_idx] = False
-    
+
     # Convert to radians for haversine
     lat_rad = np.radians(lats)
     lon_rad = np.radians(lons)
-    
+
     for _ in range(len(gps_captures) - 1):
-        # Current point
         cur_lat = lat_rad[current_idx]
         cur_lon = lon_rad[current_idx]
-        
-        # Differences
+
         dlat = lat_rad - cur_lat
         dlon = lon_rad - cur_lon
-        
-        # Haversine a component (we only need relative distance, so 'a' is sufficient)
+
+        # Haversine 'a' component — proportional to squared distance
         a = np.sin(dlat / 2.0)**2 + np.cos(cur_lat) * np.cos(lat_rad) * np.sin(dlon / 2.0)**2
-        
-        # Ignore already visited points
-        a[~unvisited] = np.inf
-        
+
+        a[~unvisited] = np.inf   # mask already-visited captures
+
         nearest_idx = int(np.argmin(a))
         ordered.append(gps_captures[nearest_idx])
         unvisited[nearest_idx] = False

@@ -128,9 +128,10 @@ def _verify_pair_worker(args):
         ransac_opt: dict passed directly to poselib.estimate_relative_pose
 
     Returns:
-        On success : (pair_id, qvec_bytes, tvec_bytes, inlier_match_bytes,
-                      n_inliers, n_rows)
-        On failure : (pair_id, None, None, None, 0, 0)
+        On success       : (pair_id, qvec_bytes, tvec_bytes, inlier_match_bytes,
+                            n_inliers, n_rows, False)
+        On few inliers   : (pair_id, None, None, None, 0, 0, False)
+        On solver crash  : (pair_id, None, None, None, 0, 0, True)
     """
     pair_id, pts_a, pts_b, match_arr, cam_a_dict, cam_b_dict, ransac_opt = args
     try:
@@ -158,15 +159,15 @@ def _verify_pair_worker(args):
         n_inliers = int(inlier_mask.sum()) if inlier_mask.size else 0
 
         if n_inliers < 15:
-            return (pair_id, None, None, None, 0, 0)
+            return (pair_id, None, None, None, 0, 0, False)  # too few inliers
 
         inlier_matches = match_arr[inlier_mask].astype("uint32")
         q = _np.asarray(pose.q, dtype="float64").tobytes()
         t = _np.asarray(pose.t, dtype="float64").tobytes()
-        return (pair_id, q, t, inlier_matches.tobytes(), n_inliers, len(inlier_matches))
+        return (pair_id, q, t, inlier_matches.tobytes(), n_inliers, len(inlier_matches), False)
 
     except Exception:
-        return (pair_id, None, None, None, 0, 0)
+        return (pair_id, None, None, None, 0, 0, True)   # solver crashed
 
 def verify_matches_poselib(
     db_path: Path,
@@ -265,9 +266,19 @@ def verify_matches_poselib(
         2: "SIMPLE_RADIAL",  3: "RADIAL", 4: "OPENCV",
     }
 
+    def _to_cam_dict(img_id: int) -> dict:
+        """Convert image_camera entry to a plain dict safe for pickling."""
+        c = image_camera[img_id]
+        return {
+            "model":  model_name_by_id.get(c["model"], "OPENCV"),
+            "params": list(c["params"]),
+            "width":  int(c["width"]),
+            "height": int(c["height"]),
+        }
+
     # ── pre-build work items (pts, camera params as plain dicts) ────────────
-    # This is done in the main process so workers get pure numpy / plain-dict
-    # data that is safely picklable. DB cursors cannot cross process boundaries.
+    # Done in the main process so workers get pure numpy / plain-dict data.
+    # DB cursors cannot cross process boundaries.
     work_items = []
     pre_rejected = {"no_camera": 0, "too_few_matches": 0}
 
@@ -288,15 +299,6 @@ def verify_matches_poselib(
         pts_a  = kpts_a[match_arr[:, 0]]
         pts_b  = kpts_b[match_arr[:, 1]]
 
-        def _to_cam_dict(img_id):
-            c = image_camera[img_id]
-            return {
-                "model":  model_name_by_id.get(c["model"], "OPENCV"),
-                "params": list(c["params"]),
-                "width":  int(c["width"]),
-                "height": int(c["height"]),
-            }
-
         work_items.append((
             pair_id,
             pts_a.copy(), pts_b.copy(),
@@ -315,6 +317,9 @@ def verify_matches_poselib(
           f"({'parallel' if use_parallel else 'sequential'})...")
 
     # ── run RANSAC (parallel or sequential) ─────────────────────────────
+    # Progress fires every 10% (min 1) to scale with any mission size
+    _print_every = max(1, len(work_items) // 10)
+
     if use_parallel:
         from concurrent.futures import ProcessPoolExecutor, as_completed
         results_iter = []
@@ -325,7 +330,7 @@ def verify_matches_poselib(
             for fut in as_completed(futures):
                 results_iter.append(fut.result())
                 done_count += 1
-                if done_count % 500 == 0:
+                if done_count % _print_every == 0:
                     elapsed_now = time.perf_counter() - t0
                     pct = 100.0 * done_count / len(work_items)
                     eta = (elapsed_now / done_count) * (len(work_items) - done_count)
@@ -335,7 +340,7 @@ def verify_matches_poselib(
         results_iter = []
         for loop_idx, item in enumerate(work_items, start=1):
             results_iter.append(_verify_pair_worker(item))
-            if loop_idx % 500 == 0:
+            if loop_idx % _print_every == 0:
                 elapsed_now = time.perf_counter() - t0
                 pct = 100.0 * loop_idx / len(work_items)
                 eta = (elapsed_now / loop_idx) * (len(work_items) - loop_idx)
@@ -343,14 +348,14 @@ def verify_matches_poselib(
                       f"elapsed: {elapsed_now:.0f}s  ETA: {eta:.0f}s")
 
     # ── write results to DB (main process only — SQLite is not thread-safe) ──
-    rej_solver_failed = 0
+    rej_solver_failed   = 0
     rej_too_few_inliers = 0
     for result in results_iter:
-        pair_id_r, qvec, tvec, match_bytes, n_inliers, n_rows = result
+        pair_id_r, qvec, tvec, match_bytes, n_inliers, n_rows, is_crash = result
         if qvec is None:
-            if n_inliers == 0 and n_rows == 0:
-                # worker couldn't tell whether it was solver error or few inliers;
-                # treat as too_few_inliers (safe conservative label)
+            if is_crash:
+                rej_solver_failed += 1
+            else:
                 rej_too_few_inliers += 1
             pairs_rejected += 1
             continue

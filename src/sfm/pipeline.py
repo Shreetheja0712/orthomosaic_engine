@@ -188,10 +188,13 @@ def run_sfm(
     n_reg_val = reconstruction.num_reg_images
     n_reg = int(n_reg_val() if callable(n_reg_val) else n_reg_val)
     n_total  = len(captures)
-    if hasattr(reconstruction, "num_points3D"):
-        n_points = reconstruction.num_points3D() if callable(reconstruction.num_points3D) else reconstruction.num_points3D
+    n_points_val = getattr(reconstruction, "num_points3D", None) or getattr(reconstruction, "points3D", None)
+    if callable(n_points_val):
+        n_points = len(n_points_val()) if n_points_val.__name__ == "points3D" else int(n_points_val())
+    elif n_points_val is not None:
+        n_points = int(n_points_val) if not hasattr(n_points_val, '__len__') else len(n_points_val)
     else:
-        n_points = len(reconstruction.points3D)
+        n_points = 0
 
     print("\n[sfm] ── Complete ──")
     print(f"[sfm] Registered : {n_reg}/{n_total} images "

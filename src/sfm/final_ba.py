@@ -53,7 +53,8 @@ def run_final_bundle_adjustment(reconstruction) -> None:
 
     n_images_val = reconstruction.num_reg_images
     n_images = int(n_images_val() if callable(n_images_val) else n_images_val)
-    n_points = len(reconstruction.points3D)
+    n_points_val = reconstruction.points3D
+    n_points = len(n_points_val() if callable(n_points_val) else n_points_val)
 
     print(f"[final_ba] Running final BA over {n_images} images, "
           f"{n_points} 3D points...")
