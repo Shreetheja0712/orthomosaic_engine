@@ -123,7 +123,13 @@ def verify_matches_poselib(
         dict with verification stats (pairs_verified, pairs_rejected, total_inliers)
     """
     poselib = _check_poselib()
-    import pycolmap as _pycolmap
+    try:
+        import pycolmap as _pycolmap
+    except ImportError as exc:
+        raise ImportError(
+            "pycolmap not installed.\n"
+            "Run:  pip install pycolmap"
+        ) from exc
     opts = {**DEFAULT_RANSAC_OPTIONS, **(ransac_options or {})}
 
     conn = sqlite3.connect(str(db_path))
@@ -182,6 +188,11 @@ def verify_matches_poselib(
     pairs_verified = 0
     pairs_rejected = 0
     total_inliers = 0
+    # Per-reason rejection counters — useful for diagnosing sparse-SfM failures.
+    rej_no_camera = 0       # image_id not found in cameras table
+    rej_too_few_matches = 0 # fewer than 5 raw matches (5-pt solver minimum)
+    rej_solver_failed = 0   # PoseLib raised an exception
+    rej_too_few_inliers = 0 # RANSAC found < 15 geometric inliers
 
     for pair_id, n_matches, cols, data in pair_rows:
         # pair_id_to_image_pair is the version-correct inverse of whatever
@@ -192,12 +203,14 @@ def verify_matches_poselib(
 
         if image_id_a not in image_camera or image_id_b not in image_camera:
             pairs_rejected += 1
+            rej_no_camera += 1
             continue
 
         matches = np.frombuffer(data, dtype="uint32").reshape(n_matches, cols)
         if len(matches) < 5:
             # Essential matrix needs minimum 5 correspondences
             pairs_rejected += 1
+            rej_too_few_matches += 1
             continue
 
         kpts_a = get_keypoints(image_id_a)
@@ -215,6 +228,7 @@ def verify_matches_poselib(
             )
         except Exception:
             pairs_rejected += 1
+            rej_solver_failed += 1
             continue
 
         inlier_mask = np.asarray(info.get("inliers", []), dtype=bool)
@@ -223,6 +237,7 @@ def verify_matches_poselib(
         # Reject pairs PoseLib could not confidently verify.
         if n_inliers < 15:
             pairs_rejected += 1
+            rej_too_few_inliers += 1
             continue
 
         inlier_matches = matches[inlier_mask].astype("uint32")
@@ -256,10 +271,21 @@ def verify_matches_poselib(
     print(f"[geometric_verification] Verified: {pairs_verified}  "
           f"Rejected: {pairs_rejected}  Total inliers: {total_inliers}  "
           f"Time: {elapsed:.1f}s")
+    if pairs_rejected:
+        print(f"[geometric_verification] Rejection breakdown — "
+              f"no_camera: {rej_no_camera}  "
+              f"too_few_matches: {rej_too_few_matches}  "
+              f"solver_failed: {rej_solver_failed}  "
+              f"too_few_inliers: {rej_too_few_inliers}")
 
     return {
         "pairs_verified": pairs_verified,
         "pairs_rejected": pairs_rejected,
         "total_inliers": total_inliers,
         "elapsed_seconds": elapsed,
+        # Per-reason rejection counts
+        "rej_no_camera": rej_no_camera,
+        "rej_too_few_matches": rej_too_few_matches,
+        "rej_solver_failed": rej_solver_failed,
+        "rej_too_few_inliers": rej_too_few_inliers,
     }
