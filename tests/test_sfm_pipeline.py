@@ -253,6 +253,88 @@ def test_colmap_verified_pair_stats_counts_mapper_graph(tmp_path):
     }
 
 
+def test_colmap_mapper_does_not_force_gps_init_pair(tmp_path, monkeypatch):
+    """
+    GPS-selected pairs can be bad two-view initializers; mapper should let
+    COLMAP choose from all verified pairs instead of setting init_image_id1/2.
+    """
+    import src.sfm.colmap_mapper as colmap_mapper
+
+    cap_a = make_capture("000", 16.900, 81.700)
+    cap_b = make_capture("001", 16.901, 81.700)
+    rgb_a = tmp_path / "000.jpg"
+    rgb_b = tmp_path / "001.jpg"
+    rgb_a.write_bytes(b"fake image bytes")
+    rgb_b.write_bytes(b"fake image bytes")
+    cap_a.rgb = str(rgb_a)
+    cap_b.rgb = str(rgb_b)
+
+    db_path = tmp_path / "database.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE two_view_geometries (pair_id INTEGER PRIMARY KEY, rows INTEGER)")
+    conn.executemany(
+        "INSERT INTO images (image_id, name) VALUES (?, ?)",
+        [(1, "000.jpg"), (2, "001.jpg")],
+    )
+    max_image_id = 2147483647
+    conn.execute(
+        "INSERT INTO two_view_geometries (pair_id, rows) VALUES (?, ?)",
+        (1 * max_image_id + 2, 30),
+    )
+    conn.commit()
+    conn.close()
+
+    calls = {}
+
+    class FakeOptions:
+        def __init__(self):
+            self.mapper = types.SimpleNamespace(
+                ba_local_num_images=6,
+                filter_max_reproj_error=4.0,
+            )
+            self.ba_global_frames_ratio = 1.1
+            self.use_prior_position = False
+            self.num_threads = 1
+            self.image_names = []
+
+    class FakeDbImage:
+        def __init__(self, image_id):
+            self.image_id = image_id
+
+    class FakeDb:
+        def read_image_with_name(self, name):
+            return {"000.jpg": FakeDbImage(1), "001.jpg": FakeDbImage(2)}.get(name)
+
+        def close(self):
+            pass
+
+    def fake_incremental_mapping(database_path, image_path, output_path, options):
+        calls["has_init_id1"] = hasattr(options, "init_image_id1")
+        calls["has_init_id2"] = hasattr(options, "init_image_id2")
+        return {}
+
+    fake_pycolmap = types.SimpleNamespace(
+        Database=types.SimpleNamespace(open=lambda _: FakeDb()),
+        IncrementalPipelineOptions=FakeOptions,
+        image_pair_to_pair_id=lambda a, b: min(a, b) * max_image_id + max(a, b),
+        pair_id_to_image_pair=lambda pair_id: (1, 2),
+        incremental_mapping=fake_incremental_mapping,
+    )
+    monkeypatch.setitem(sys.modules, "pycolmap", fake_pycolmap)
+
+    result = colmap_mapper.run_colmap_incremental(
+        database_path=str(db_path),
+        image_dir=str(tmp_path),
+        output_dir=str(tmp_path / "sparse"),
+        keyframes=[cap_a, cap_b],
+        init_pair=(cap_a, cap_b),
+    )
+
+    assert result is None
+    assert calls == {"has_init_id1": False, "has_init_id2": False}
+
+
 def test_colmap_mapper_uses_canonical_lowercase_image_names(tmp_path, monkeypatch):
     """
     Regression guard for COLMAP reporting `loaded 0`: the mapper image allowlist

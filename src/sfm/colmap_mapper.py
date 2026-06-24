@@ -147,10 +147,48 @@ def _decode_pair_id(pair_id: int) -> Tuple[int, int]:
     """
     Decode COLMAP's order-independent pair_id into image IDs.
     """
+    try:
+        import pycolmap
+        return tuple(map(int, pycolmap.pair_id_to_image_pair(int(pair_id))))
+    except Exception:
+        pass
+
     max_image_id = 2147483647
     image_id2 = int(pair_id) % max_image_id
     image_id1 = (int(pair_id) - image_id2) // max_image_id
     return image_id1, image_id2
+
+
+def _image_pair_id(image_id1: int, image_id2: int) -> int:
+    """
+    Compute COLMAP's pair_id using pycolmap when available.
+    """
+    try:
+        import pycolmap
+        return int(pycolmap.image_pair_to_pair_id(int(image_id1), int(image_id2)))
+    except Exception:
+        pass
+
+    max_image_id = 2147483647
+    a, b = sorted((int(image_id1), int(image_id2)))
+    return a * max_image_id + b
+
+
+def _has_verified_pair(database_path: str, image_id1: int, image_id2: int) -> bool:
+    """
+    Return True when two images have a verified two-view geometry with inliers.
+    """
+    try:
+        conn = sqlite3.connect(str(database_path))
+        row = conn.execute(
+            "SELECT rows FROM two_view_geometries WHERE pair_id=?",
+            (_image_pair_id(image_id1, image_id2),),
+        ).fetchone()
+        conn.close()
+    except sqlite3.Error:
+        return False
+
+    return row is not None and int(row[0] or 0) > 0
 
 
 def _verified_pair_stats(database_path: str, image_names: List[str]) -> Optional[dict]:
@@ -209,6 +247,7 @@ def run_colmap_incremental(
     output_dir     : str,
     keyframes      : List[Capture],
     init_pair      : Optional[Tuple[Capture, Capture]] = None,
+    use_prior_position: bool = True,
 ) -> Optional[object]:
     """
     Step 4 — COLMAP incremental SfM on keyframes only.
@@ -264,23 +303,30 @@ def run_colmap_incremental(
     # GPS/RTK priors — activate prior position constraints.
     # use_prior_position tells BA to use the pose priors injected by pose_priors.py.
     # Use _set_opt: the attribute is absent in some pycolmap debug builds.
-    if not _set_opt(opt, "use_prior_position", True):
-        print("[colmap] Warning: use_prior_position not available in this pycolmap build; "
-              "GPS pose priors will not be enforced during incremental mapping.")
+    if not _set_opt(opt, "use_prior_position", use_prior_position):
+        print(f"[colmap] Warning: use_prior_position not available in this pycolmap build; "
+              f"GPS pose priors will not be enforced during incremental mapping.")
 
-    # Optimization 2 — GPS-guided init pair
+    # GPS-guided init pair is diagnostic-only by default.
+    #
+    # A GPS baseline can be physically sensible yet still be unsuitable for
+    # COLMAP's two-view initializer, especially for nadir/near-planar fields.
+    # Forcing init_image_id1/2 makes COLMAP repeatedly try that pair and discard
+    # the reconstruction. Leaving them unset lets COLMAP rank all verified pairs.
     if init_pair is not None:
         db = pycolmap.Database.open(str(database_path))
         id1 = _resolve_image_id(db, init_pair[0])
         id2 = _resolve_image_id(db, init_pair[1])
         db.close()
 
-        if id1 is not None and id2 is not None:
-            opt.init_image_id1 = id1
-            opt.init_image_id2 = id2
-            print(f"[colmap] GPS-guided init pair: "
+        if id1 is not None and id2 is not None and _has_verified_pair(database_path, id1, id2):
+            print(f"[colmap] GPS-guided init pair is verified but will not be forced: "
                   f"{init_pair[0].capture_id} (id={id1}) <-> "
-                  f"{init_pair[1].capture_id} (id={id2})")
+                  f"{init_pair[1].capture_id} (id={id2}). "
+                  "COLMAP will select the best init pair.")
+        elif id1 is not None and id2 is not None:
+            print("[colmap] Warning: GPS-guided init pair has no verified geometry. "
+                  "COLMAP will select its own init pair.")
         else:
             print("[colmap] Warning: could not resolve init pair image ids. "
                   "COLMAP will select its own init pair.")

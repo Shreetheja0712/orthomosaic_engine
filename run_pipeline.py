@@ -53,6 +53,7 @@ def main():
     captures = load_mission(mission_dir)
 
     # Detect if GPS is completely missing from EXIF
+    sfm_keyframe_interval = 3
     has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
     if not has_any_gps:
         print("\n[pipeline] WARNING: No GPS metadata found in any image EXIF.")
@@ -63,6 +64,7 @@ def main():
             cap.longitude = 9.0
             cap.altitude = 120.0
         args.n_neighbors = len(captures)
+        sfm_keyframe_interval = 1
 
     captures = filter_quality(captures)
     print(f"  {len(captures)} valid captures ready")
@@ -92,6 +94,8 @@ def main():
         output_dir    = str(output_dir / "sparse"),
         captures      = captures,
         has_rtk       = args.rtk,
+        keyframe_interval = sfm_keyframe_interval,
+        use_prior_position = has_any_gps,
     )
     if reconstruction is None:
         print("ERROR: SfM failed. Check your images have GPS and enough overlap.")

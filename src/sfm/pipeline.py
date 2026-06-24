@@ -73,6 +73,7 @@ def run_sfm(
     captures       : List[Capture],
     has_rtk        : bool = False,
     keyframe_interval: int = 3,
+    use_prior_position: bool = True,
 ) -> Optional[object]:
     """
     Full SfM pipeline — Steps 1-7.
@@ -140,6 +141,7 @@ def run_sfm(
             output_dir    = str(output_path),
             keyframes     = keyframes,
             init_pair     = init_pair,
+            use_prior_position = use_prior_position,
         )
         if reconstruction is not None:
             path_used = "COLMAP"
@@ -152,6 +154,7 @@ def run_sfm(
                 output_dir    = str(output_path),
                 keyframes     = captures,
                 init_pair     = init_pair,
+                use_prior_position = use_prior_position,
             )
             if reconstruction is not None:
                 path_used = "COLMAP-full"
