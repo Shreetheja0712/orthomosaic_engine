@@ -208,6 +208,77 @@ def read_gps(image_path: str) -> tuple[Optional[float], Optional[float], Optiona
         return None, None, None
 
 
+def read_focal_length_px(image_path: str) -> tuple[Optional[float], Optional[int]]:
+    """
+    Compute the camera's focal length in pixels directly from EXIF, instead
+    of relying on a generic heuristic.
+
+    Formula (standard EXIF focal-plane convention):
+        px_per_mm = FocalPlaneXResolution / mm_per_unit(FocalPlaneResolutionUnit)
+        focal_px  = FocalLength_mm * px_per_mm
+
+    This is independent of any later resizing the pipeline does to the
+    image (e.g. extractor.py's `resize=1600`), because EXIF focal-plane
+    tags describe the sensor as captured. The returned `ref_width_px`
+    (EXIF ExifImageWidth/ImageWidth) records what width that focal length
+    corresponds to, so callers can rescale it correctly if the image was
+    later resized: focal_px_at_w = focal_px * (w / ref_width_px).
+
+    Returns:
+        (focal_length_px, ref_width_px) — both None if the required EXIF
+        tags are missing, malformed, or produce an implausible value.
+        A None result means "do not trust this as a calibrated prior" —
+        callers must fall back to a heuristic and leave
+        has_prior_focal_length=False on the COLMAP camera.
+    """
+    try:
+        import exifread
+        with open(image_path, "rb") as f:
+            tags = exifread.process_file(f, details=False)
+
+        focal_tag = tags.get("EXIF FocalLength")
+        plane_res_tag = tags.get("EXIF FocalPlaneXResolution")
+        if focal_tag is None or plane_res_tag is None:
+            return None, None
+
+        focal_mm = float(focal_tag.values[0].num) / float(focal_tag.values[0].den)
+        plane_res = float(plane_res_tag.values[0].num) / float(plane_res_tag.values[0].den)
+        if focal_mm <= 0 or plane_res <= 0:
+            return None, None
+
+        # EXIF FocalPlaneResolutionUnit: 2 = inches (default per spec), 3 = cm.
+        unit_tag = tags.get("EXIF FocalPlaneResolutionUnit")
+        unit_code = 2
+        if unit_tag is not None:
+            try:
+                unit_code = int(str(unit_tag))
+            except ValueError:
+                pass
+        mm_per_unit = 25.4 if unit_code == 2 else 10.0
+
+        px_per_mm = plane_res / mm_per_unit
+        focal_px = focal_mm * px_per_mm
+
+        # Sanity guard: reject implausible values rather than silently
+        # poisoning the reconstruction with a "trusted" bad prior.
+        if not (100.0 < focal_px < 50000.0):
+            return None, None
+
+        ref_width = None
+        width_tag = tags.get("EXIF ExifImageWidth") or tags.get("Image ImageWidth")
+        if width_tag is not None:
+            try:
+                ref_width = int(str(width_tag))
+            except ValueError:
+                ref_width = None
+
+        return focal_px, ref_width
+
+    except Exception as e:
+        print(f"[exif_reader] Warning: could not read focal length from {image_path}: {e}")
+        return None, None
+
+
 def detect_rtk(image_path: str) -> bool:
     """
     Detect whether an image was captured with RTK-quality GPS.

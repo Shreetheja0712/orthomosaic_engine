@@ -136,7 +136,14 @@ def prepare_openmvs_workspace(
     # ------------------------------------------------------------------ #
     if colmap_sparse_dir is None:
         sparse_dir = output_path / "sparse"
-        sparse_dir.mkdir(exist_ok=True)
+        if sparse_dir.exists():
+            # A previous run (or an earlier interrupted attempt) may have left
+            # stale cameras.bin/images.bin/rigs.bin/frames.bin here. mkdir(...,
+            # exist_ok=True) below does NOT clear existing files, so without
+            # this the OLD rigs.bin/frames.bin can survive even after this
+            # run's export+cleanup, and InterfaceCOLMAP chokes on them again.
+            shutil.rmtree(sparse_dir)
+        sparse_dir.mkdir(parents=True, exist_ok=True)
         colmap_sparse_dir = str(sparse_dir)
         _export_reconstruction_to_colmap_safe_mvs(reconstruction, str(sparse_dir))
         logger.info("Exported COLMAP sparse model to %s", sparse_dir)
@@ -197,14 +204,31 @@ def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -
         reconstruction.write(sparse_dir)
     elif hasattr(reconstruction, "write_binary"):
         reconstruction.write_binary(sparse_dir)
-    
+
     # OpenMVS workaround: remove unsupported 4.0+ files
     p = Path(sparse_dir)
+    removed = []
     for f in ["rigs.bin", "frames.bin", "rigs.txt", "frames.txt"]:
         if (p / f).exists():
             (p / f).unlink()
-            
-    logger.debug("Wrote COLMAP sparse model (OpenMVS-safe) to %s", sparse_dir)
+            removed.append(f)
+
+    # Verify the cleanup actually took — if these reappear (e.g. something
+    # else recreated them, or unlink silently failed on some filesystem),
+    # fail loudly here instead of letting InterfaceCOLMAP crash later with
+    # an opaque "exit 1" and empty stdout/stderr.
+    still_present = [f for f in ["rigs.bin", "frames.bin"] if (p / f).exists()]
+    if still_present:
+        raise RuntimeError(
+            f"OpenMVS-incompatible files still present in {sparse_dir} after "
+            f"cleanup: {still_present}. Remove this directory manually and "
+            f"re-run Stage 8."
+        )
+
+    logger.debug(
+        "Wrote COLMAP sparse model (OpenMVS-safe) to %s (removed: %s)",
+        sparse_dir, removed or "none present",
+    )
 
 
 

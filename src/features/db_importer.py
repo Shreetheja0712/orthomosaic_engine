@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import time
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
 import numpy as np
 
@@ -51,6 +51,45 @@ OPENCV_MODEL_ID = 4   # fx, fy, cx, cy, k1, k2, p1, p2
 # Default focal length multiplier when EXIF focal length is unavailable.
 # 1.2 × sensor_diagonal is a reasonable prior for drone cameras.
 FOCAL_MULTIPLIER_DEFAULT = 1.2
+
+
+def _derive_focal_length_from_exif(
+    captures: List[Capture],
+    img_w: int,
+) -> "Tuple[Optional[float], int]":
+    """
+    Derive a robust focal length (in pixels, at the working image width
+    `img_w`) from per-capture EXIF focal-plane data written by grouper.py.
+
+    Each capture's focal_length_px was computed at that capture's own
+    EXIF image width (focal_length_ref_width), which may differ from
+    img_w if extractor.py resized images before feature extraction.
+    Each sample is rescaled to img_w before taking the median, so the
+    result is directly usable as this camera's calibrated focal length:
+
+        focal_px_at_w = focal_px_exif * (img_w / ref_width)
+
+    Returns None if fewer than a handful of captures have usable EXIF
+    focal data — a single or a few EXIF reads are not enough to trust
+    as a calibrated prior for the *entire* shared camera.
+    """
+    samples = []
+    for cap in captures:
+        if cap.focal_length_px is None or not cap.focal_length_ref_width:
+            continue
+        scale = img_w / float(cap.focal_length_ref_width)
+        samples.append(cap.focal_length_px * scale)
+
+    # Require a reasonable sample size before trusting EXIF as a prior —
+    # a couple of misread tags shouldn't poison the whole mission.
+    min_samples = max(5, int(0.5 * len(captures))) if captures else 5
+    if len(samples) < min_samples:
+        return None, len(samples)
+
+    samples.sort()
+    n = len(samples)
+    median = samples[n // 2] if n % 2 else 0.5 * (samples[n // 2 - 1] + samples[n // 2])
+    return float(median), len(samples)
 
 
 # ── COLMAP database helpers (pycolmap.Database — required for rig/frame) ────
@@ -154,19 +193,42 @@ def import_to_colmap(
         img_w, img_h = int(f["image_size"][0]), int(f["image_size"][1])
 
     # ── 2. Camera — single shared OPENCV model ──────────────────────────────
-    if focal_length_px is None:
-        # Heuristic prior: focal ≈ 1.2 × max(width, height)
-        focal_length_px = FOCAL_MULTIPLIER_DEFAULT * max(img_w, img_h)
-        print(f"[db_importer] focal_length_px not provided — using heuristic: "
-              f"{focal_length_px:.1f} px  ({img_w}×{img_h} image)")
+    has_prior_focal_length = False
+    if focal_length_px is not None:
+        # Caller explicitly supplied a known/calibrated value.
+        has_prior_focal_length = True
+        print(f"[db_importer] focal_length_px: {focal_length_px:.1f} px  "
+              f"(source: explicit override, has_prior_focal_length=True)")
     else:
-        print(f"[db_importer] focal_length_px: {focal_length_px:.1f} px")
+        derived_focal_px, n_samples = _derive_focal_length_from_exif(captures, img_w)
+        if derived_focal_px is not None:
+            focal_length_px = derived_focal_px
+            has_prior_focal_length = True
+            print(f"[db_importer] focal_length_px: {focal_length_px:.1f} px  "
+                  f"(source: EXIF median over {n_samples} captures, "
+                  f"has_prior_focal_length=True)")
+        else:
+            # Heuristic prior: focal ≈ 1.2 × max(width, height)
+            focal_length_px = FOCAL_MULTIPLIER_DEFAULT * max(img_w, img_h)
+            has_prior_focal_length = False
+            print(f"[db_importer] focal_length_px not found in EXIF "
+                  f"(only {n_samples} usable captures) — using heuristic: "
+                  f"{focal_length_px:.1f} px  ({img_w}×{img_h} image, "
+                  f"has_prior_focal_length=False)")
+            print("[db_importer] WARNING: without a calibrated focal length, "
+                  "GLOMAP's global positioner and the incremental mapper's "
+                  "self-calibration are both far less stable, especially for "
+                  "near-planar nadir drone scenes. If reconstructions are "
+                  "fragmenting or GLOMAP keeps failing validation, pass a "
+                  "known focal_length_px explicitly or check why EXIF "
+                  "FocalLength/FocalPlaneXResolution tags are missing.")
 
     cx, cy = img_w / 2.0, img_h / 2.0
     # OPENCV params: fx, fy, cx, cy, k1, k2, p1, p2  (all distortion = 0 initially)
     params = [focal_length_px, focal_length_px, cx, cy, 0.0, 0.0, 0.0, 0.0]
 
     camera = pycolmap.Camera(model="OPENCV", params=params, width=img_w, height=img_h)
+    camera.has_prior_focal_length = has_prior_focal_length
     camera_id = db.write_camera(camera)
 
     # ── 3. Trivial rig — one sensor (the shared camera), identity pose ──────

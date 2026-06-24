@@ -14,6 +14,13 @@ class Capture:
     longitude: Optional[float] = None
     altitude: Optional[float] = None
     has_rtk: bool = False
+    # Focal length derived from EXIF (FocalLength + FocalPlaneXResolution),
+    # in pixels, measured at `focal_length_ref_width` image width.
+    # None if EXIF did not contain usable focal-plane tags — callers must
+    # fall back to a heuristic and must NOT mark the COLMAP camera as
+    # having a prior focal length in that case.
+    focal_length_px: Optional[float] = None
+    focal_length_ref_width: Optional[int] = None
 
     def is_complete(self) -> bool:
         return all([

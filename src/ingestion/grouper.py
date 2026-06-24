@@ -2,7 +2,7 @@ import os
 import re
 from typing import Optional
 from .capture import Capture
-from .exif_reader import read_gps, detect_rtk
+from .exif_reader import read_gps, detect_rtk, read_focal_length_px
 
 
 # ── Pattern 1: existing IMG_* convention ─────────────────────────────────────
@@ -118,6 +118,10 @@ def group_captures(mission_dir: str) -> dict[str, Capture]:
         captures[capture_id].longitude = lon
         captures[capture_id].altitude  = alt
         captures[capture_id].has_rtk   = detect_rtk(filepath)
+
+        focal_px, ref_width = read_focal_length_px(filepath)
+        captures[capture_id].focal_length_px       = focal_px
+        captures[capture_id].focal_length_ref_width = ref_width
 
     # Scan multi/
     for filename in sorted(os.listdir(multi_dir)):
