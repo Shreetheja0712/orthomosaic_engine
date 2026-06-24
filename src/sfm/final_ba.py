@@ -127,7 +127,13 @@ def align_to_gps(
           f"({len(ref_images)} reference images)...")
 
     try:
-        pycolmap.align_reconstructions_to_locations(
+        align_func = getattr(pycolmap, "align_reconstruction_to_locations", None)
+        if align_func is None:
+            align_func = getattr(pycolmap, "align_reconstructions_to_locations", None)
+        if align_func is None:
+            raise AttributeError("PyCOLMAP has no GPS alignment function (tried align_reconstruction_to_locations).")
+        
+        align_func(
             reconstruction,
             ref_images,
         )

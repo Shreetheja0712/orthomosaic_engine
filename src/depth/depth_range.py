@@ -53,7 +53,8 @@ if TYPE_CHECKING:
 def _get_R(image) -> np.ndarray:
     """Return the 3×3 world-to-camera rotation matrix for a pycolmap.Image."""
     if hasattr(image, "cam_from_world"):
-        rot = image.cam_from_world.rotation
+        cfw = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
+        rot = cfw.rotation
         if hasattr(rot, "matrix"):
             return np.asarray(rot.matrix(), dtype=np.float64)
         # Some builds expose a quaternion (.quat is xyzw)
@@ -77,7 +78,8 @@ def _get_R(image) -> np.ndarray:
 def _get_t(image) -> np.ndarray:
     """Return the (3,) world-to-camera translation vector for a pycolmap.Image."""
     if hasattr(image, "cam_from_world"):
-        return np.asarray(image.cam_from_world.translation, dtype=np.float64)
+        cfw = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
+        return np.asarray(cfw.translation, dtype=np.float64)
     if hasattr(image, "tvec"):
         return np.asarray(image.tvec, dtype=np.float64)
     raise AttributeError(

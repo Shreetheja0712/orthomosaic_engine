@@ -72,7 +72,7 @@ def main():
     # in 8+ keyframes, SfM runs 3x faster. The disconnected-graph failure
     # seen earlier was caused by max_epipolar_error=1.5px in geometric
     # verification being too tight (now fixed to 3.0px), NOT by this interval.
-    sfm_keyframe_interval = 3
+    sfm_keyframe_interval = 1
     has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
     if not has_any_gps:
         print("\n[pipeline] WARNING: No GPS metadata found in any image EXIF.")

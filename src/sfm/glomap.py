@@ -115,7 +115,8 @@ def _camera_gps_pairs(reconstruction, captures: List[Capture]) -> Tuple[np.ndarr
                 center = image.projection_center()
             except AttributeError:
                 if hasattr(image, "cam_from_world"):
-                    center = -image.cam_from_world.rotation.matrix().T @ image.cam_from_world.translation
+                    cfw = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
+                    center = -cfw.rotation.matrix().T @ cfw.translation
                 else:
                     center = -image.rotation_matrix().T @ image.tvec
             computed.append(np.asarray(center, dtype="float64"))

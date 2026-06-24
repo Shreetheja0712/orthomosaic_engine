@@ -276,9 +276,13 @@ def import_to_colmap(
                 img_id_a = cap_id_to_image_id[id_a]
                 img_id_b = cap_id_to_image_id[id_b]
 
-                # write_matches handles pair_id encoding and column ordering
-                # internally — no need to flip columns or compute pair_id
-                # ourselves (verified against pycolmap.image_pair_to_pair_id).
+                if img_id_a > img_id_b:
+                    matches = matches[:, ::-1].copy()
+                    img_id_a, img_id_b = img_id_b, img_id_a
+
+                # write_matches handles pair_id encoding internally.
+                # By enforcing img_id_a < img_id_b, we avoid any ambiguity in PyCOLMAP's
+                # python bindings regarding automatic column swapping.
                 db.write_matches(img_id_a, img_id_b, matches.astype("uint32"))
                 match_pair_count += 1
 
