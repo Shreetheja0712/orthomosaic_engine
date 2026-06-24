@@ -32,8 +32,10 @@ def write_colmap_text(recon, output_dir: str):
             # Handle PyCOLMAP 3.x vs 4.x differences
             if hasattr(img, "cam_from_world"):
                 # PyCOLMAP 4.x
-                qvec = img.cam_from_world.rotation.quat
-                tvec = img.cam_from_world.translation
+                cfw = img.cam_from_world() if callable(img.cam_from_world) else img.cam_from_world
+                qx, qy, qz, qw = cfw.rotation.quat
+                qvec = (qw, qx, qy, qz)
+                tvec = cfw.translation
             else:
                 # PyCOLMAP 3.x
                 qvec = img.qvec

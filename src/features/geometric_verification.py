@@ -452,11 +452,13 @@ def verify_matches_poselib(
 
         if image_id_a not in image_camera or image_id_b not in image_camera:
             pre_rejected["no_camera"] += 1
+            pairs_rejected += 1
             continue
 
         match_arr = np.frombuffer(data, dtype="uint32").reshape(n_matches, cols)
         if len(match_arr) < 5:
             pre_rejected["too_few_matches"] += 1
+            pairs_rejected += 1
             continue
 
         kpts_a = get_keypoints(image_id_a)
