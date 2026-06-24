@@ -31,6 +31,7 @@ weight is converted into covariance as:  covariance = I * (1 / weight)
 
 from __future__ import annotations
 
+import sqlite3
 from typing import List
 
 import numpy as np
@@ -80,6 +81,16 @@ def inject_gps_priors(
 
     print(f"[pose_priors] Injecting {label} priors  (weight={weight:.0e}, "
           f"covariance_diag={1.0/weight:.0e})")
+
+    # Remove any pose priors written by a previous run.  The pose_priors table
+    # has a UNIQUE constraint on corr_data_id, so re-inserting without clearing
+    # first raises a SQLite "constraint failed" error when the pipeline is
+    # restarted from Stage 6 with an existing database.db.
+    with sqlite3.connect(str(db_path)) as _conn:
+        deleted = _conn.execute("DELETE FROM pose_priors").rowcount
+        _conn.commit()
+    if deleted:
+        print(f"[pose_priors] Cleared {deleted} stale pose prior(s) from previous run.")
 
     db = pycolmap.Database.open(str(db_path))
 

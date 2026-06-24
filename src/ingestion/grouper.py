@@ -5,16 +5,20 @@ from .capture import Capture
 from .exif_reader import read_gps
 
 
+# ── Pattern 1: existing IMG_* convention ─────────────────────────────────────
 # Matches: IMG_<optional_prefix>_<capture>_<band>.<ext>
 # Supports formats like:
 # - IMG_0001_000_RGB.jpg (test format)
 # - IMG_260315_083045_0000_RGB.JPG (user format with date and time)
-FILENAME_PATTERN = re.compile(
+IMG_PATTERN = re.compile(
     r"^IMG_(?:\d+_)*(\d+)_(RGB|GRE|NIR|RED|REG)\.(jpg|jpeg|tiff|tif)$",
     re.IGNORECASE
 )
 
-BAND_MAP = {
+# Keep the old name as an alias so any external code that imported it still works.
+FILENAME_PATTERN = IMG_PATTERN
+
+IMG_BAND_MAP = {
     "RGB": "rgb",
     "GRE": "green",
     "NIR": "nir",
@@ -22,17 +26,50 @@ BAND_MAP = {
     "REG": "reg",
 }
 
+# ── Pattern 2: DJI Zenmuse / Mavic Multispectral convention ──────────────────
+# rgb/   → DJI_<timestamp14>_<frame4>_D.(JPG|JPEG)
+# multi/ → DJI_<timestamp14>_<frame4>_MS_(G|NIR|R|RE).(TIF|TIFF)
+#
+# capture_id = "<timestamp>_<frame>"  e.g. "20240405154706_0001"
+# This keeps IDs unique across flights even if frame counters reset.
+DJI_PATTERN = re.compile(
+    r"^DJI_(\d{14})_(\d{4})_(D|MS_G|MS_NIR|MS_R|MS_RE)\.(jpg|jpeg|tif|tiff)$",
+    re.IGNORECASE
+)
+
+DJI_BAND_MAP = {
+    "D":      "rgb",
+    "MS_G":   "green",
+    "MS_NIR": "nir",
+    "MS_R":   "red",
+    "MS_RE":  "reg",
+}
+
+# Combined alias used by the rest of the module
+BAND_MAP = {**IMG_BAND_MAP, **DJI_BAND_MAP}
+
 
 def _parse_filename(filename: str) -> Optional[tuple[str, str]]:
     """
     Parse filename and return (capture_id, band) or None if no match.
+
+    Tries the IMG_* pattern first, then the DJI pattern.
+    The returned band is always the internal key used in BAND_MAP
+    (e.g. "RGB", "GRE", "D", "MS_G", …).
     """
-    match = FILENAME_PATTERN.match(filename)
-    if not match:
-        return None
-    capture_id = match.group(1)
-    band = match.group(2).upper()
-    return capture_id, band
+    # ── IMG_* ─────────────────────────────────────────────────────────────────
+    m = IMG_PATTERN.match(filename)
+    if m:
+        return m.group(1), m.group(2).upper()
+
+    # ── DJI ───────────────────────────────────────────────────────────────────
+    m = DJI_PATTERN.match(filename)
+    if m:
+        capture_id = f"{m.group(1)}_{m.group(2)}"   # e.g. "20240405154706_0001"
+        band = m.group(3).upper()                    # "D", "MS_G", "MS_NIR", …
+        return capture_id, band
+
+    return None
 
 
 def group_captures(mission_dir: str) -> dict[str, Capture]:
@@ -57,7 +94,8 @@ def group_captures(mission_dir: str) -> dict[str, Capture]:
         if result is None:
             continue
         capture_id, band = result
-        if band != "RGB":
+        # Both IMG "RGB" and DJI "D" are the downward RGB image.
+        if BAND_MAP.get(band) != "rgb":
             print(f"[grouper] Warning: unexpected band {band} in rgb/ folder: {filename}")
             continue
 
@@ -80,7 +118,8 @@ def group_captures(mission_dir: str) -> dict[str, Capture]:
         if result is None:
             continue
         capture_id, band = result
-        if band == "RGB":
+        # Reject any file whose band resolves to "rgb" (belongs in rgb/ folder).
+        if BAND_MAP.get(band) == "rgb":
             print(f"[grouper] Warning: RGB file found in multi/ folder: {filename}")
             continue
 
