@@ -148,7 +148,10 @@ def main():
             captures           = captures,
             has_rtk            = args.rtk,
             keyframe_interval  = sfm_keyframe_interval,
-            use_prior_position = has_any_gps,
+            # COLMAP's use_prior_position is brittle with ordinary GPS and can
+            # repeatedly discard otherwise valid components when prior alignment
+            # fails. Use it only for RTK; normal GPS is applied in final alignment.
+            use_prior_position = args.rtk,
         )
         if reconstruction is None:
             print("[pipeline] ERROR: SfM failed. Check GPS metadata and image overlap.")

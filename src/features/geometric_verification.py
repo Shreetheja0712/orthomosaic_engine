@@ -42,6 +42,7 @@ import numpy as np
 # 0 = UNDEFINED, 1 = DEGENERATE, 2 = CALIBRATED, 3 = UNCALIBRATED,
 # 4 = PLANAR, 5 = PANORAMIC, 6 = PLANAR_OR_PANORAMIC, 7 = WATERMARK, 8 = MULTIPLE
 CONFIG_CALIBRATED = 2
+CONFIG_PLANAR = 4
 
 # Default PoseLib RANSAC options tuned for nadir drone imagery + LightGlue matches.
 #
@@ -111,6 +112,141 @@ def _pack_pose_blobs(pose) -> dict:
     }
 
 
+def _pack_matrix_blob(matrix: np.ndarray) -> bytes:
+    return np.asarray(matrix, dtype="float64").reshape(3, 3).tobytes()
+
+
+def _camera_matrix(params: Tuple[float, ...]) -> np.ndarray:
+    if len(params) >= 4:
+        fx, fy, cx, cy = params[:4]
+    elif len(params) >= 3:
+        fx = fy = params[0]
+        cx, cy = params[1:3]
+    else:
+        raise ValueError("Camera parameters do not include focal/principal point.")
+    return np.array([[fx, 0.0, cx], [0.0, fy, cy], [0.0, 0.0, 1.0]], dtype="float64")
+
+
+def _rotation_matrix_to_qvec(R: np.ndarray) -> np.ndarray:
+    R = np.asarray(R, dtype="float64").reshape(3, 3)
+    trace = np.trace(R)
+    if trace > 0:
+        s = np.sqrt(trace + 1.0) * 2.0
+        q = np.array([
+            0.25 * s,
+            (R[2, 1] - R[1, 2]) / s,
+            (R[0, 2] - R[2, 0]) / s,
+            (R[1, 0] - R[0, 1]) / s,
+        ])
+    else:
+        i = int(np.argmax(np.diag(R)))
+        if i == 0:
+            s = np.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2.0
+            q = np.array([
+                (R[2, 1] - R[1, 2]) / s,
+                0.25 * s,
+                (R[0, 1] + R[1, 0]) / s,
+                (R[0, 2] + R[2, 0]) / s,
+            ])
+        elif i == 1:
+            s = np.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2.0
+            q = np.array([
+                (R[0, 2] - R[2, 0]) / s,
+                (R[0, 1] + R[1, 0]) / s,
+                0.25 * s,
+                (R[1, 2] + R[2, 1]) / s,
+            ])
+        else:
+            s = np.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2.0
+            q = np.array([
+                (R[1, 0] - R[0, 1]) / s,
+                (R[0, 2] + R[2, 0]) / s,
+                (R[1, 2] + R[2, 1]) / s,
+                0.25 * s,
+            ])
+    norm = np.linalg.norm(q)
+    return (q / norm if norm > 0 else q).astype("float64")
+
+
+def _verify_opencv_essential(
+    pts_a: np.ndarray,
+    pts_b: np.ndarray,
+    params_a: Tuple[float, ...],
+    threshold_px: float,
+):
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    if len(pts_a) < 5:
+        return None
+
+    K = _camera_matrix(params_a)
+    E, mask = cv2.findEssentialMat(
+        pts_a.astype("float64"),
+        pts_b.astype("float64"),
+        cameraMatrix=K,
+        method=cv2.RANSAC,
+        prob=0.999,
+        threshold=float(threshold_px),
+    )
+    if E is None or mask is None:
+        return None
+    if E.ndim == 3:
+        E = E[:, :, 0]
+    elif E.shape[0] > 3:
+        E = E[:3, :]
+
+    _, R, t, pose_mask = cv2.recoverPose(
+        E,
+        pts_a.astype("float64"),
+        pts_b.astype("float64"),
+        cameraMatrix=K,
+        mask=mask,
+    )
+    inliers = pose_mask.reshape(-1).astype(bool)
+    return {
+        "config": CONFIG_CALIBRATED,
+        "qvec": _rotation_matrix_to_qvec(R).tobytes(),
+        "tvec": np.asarray(t, dtype="float64").reshape(3).tobytes(),
+        "E": _pack_matrix_blob(E),
+        "H": None,
+        "inliers": inliers,
+        "kind": "opencv_essential",
+    }
+
+
+def _verify_homography(pts_a: np.ndarray, pts_b: np.ndarray, threshold_px: float):
+    try:
+        import cv2
+    except ImportError:
+        return None
+
+    if len(pts_a) < 4:
+        return None
+
+    H, mask = cv2.findHomography(
+        pts_a.astype("float64"),
+        pts_b.astype("float64"),
+        method=cv2.RANSAC,
+        ransacReprojThreshold=float(threshold_px),
+        maxIters=5000,
+        confidence=0.999,
+    )
+    if H is None or mask is None:
+        return None
+    return {
+        "config": CONFIG_PLANAR,
+        "qvec": None,
+        "tvec": None,
+        "E": None,
+        "H": _pack_matrix_blob(H),
+        "inliers": mask.reshape(-1).astype(bool),
+        "kind": "homography",
+    }
+
+
 # ── Parallel worker ───────────────────────────────────────────────────────────────────
 # Module-level function so it can be pickled for ProcessPoolExecutor.
 
@@ -128,12 +264,12 @@ def _verify_pair_worker(args):
         ransac_opt: dict passed directly to poselib.estimate_relative_pose
 
     Returns:
-        On success       : (pair_id, qvec_bytes, tvec_bytes, inlier_match_bytes,
-                            n_inliers, n_rows, False)
-        On few inliers   : (pair_id, None, None, None, 0, 0, False)
-        On solver crash  : (pair_id, None, None, None, 0, 0, True)
+        Tuple consumed by verify_matches_poselib's DB writer.
     """
     pair_id, pts_a, pts_b, match_arr, cam_a_dict, cam_b_dict, ransac_opt = args
+    min_inliers = 15
+    loose_threshold = max(float(ransac_opt["max_epipolar_error"]) * 2.0, 4.0)
+
     try:
         import poselib
         import numpy as _np
@@ -158,16 +294,45 @@ def _verify_pair_worker(args):
         inlier_mask = _np.asarray(info.get("inliers", []), dtype=bool)
         n_inliers = int(inlier_mask.sum()) if inlier_mask.size else 0
 
-        if n_inliers < 15:
-            return (pair_id, None, None, None, 0, 0, False)  # too few inliers
-
-        inlier_matches = match_arr[inlier_mask].astype("uint32")
-        q = _np.asarray(pose.q, dtype="float64").tobytes()
-        t = _np.asarray(pose.t, dtype="float64").tobytes()
-        return (pair_id, q, t, inlier_matches.tobytes(), n_inliers, len(inlier_matches), False)
+        if n_inliers >= min_inliers:
+            inlier_matches = match_arr[inlier_mask].astype("uint32")
+            q = _np.asarray(pose.q, dtype="float64").tobytes()
+            t = _np.asarray(pose.t, dtype="float64").tobytes()
+            return (
+                pair_id, CONFIG_CALIBRATED, q, t, None, None,
+                inlier_matches.tobytes(), n_inliers, len(inlier_matches),
+                False, "poselib",
+            )
 
     except Exception:
-        return (pair_id, None, None, None, 0, 0, True)   # solver crashed
+        pass
+
+    for result in (
+        _verify_opencv_essential(pts_a, pts_b, tuple(cam_a_dict["params"]), loose_threshold),
+        _verify_homography(pts_a, pts_b, loose_threshold),
+    ):
+        if result is None:
+            continue
+        inlier_mask = result["inliers"]
+        n_inliers = int(inlier_mask.sum()) if inlier_mask.size else 0
+        if n_inliers < min_inliers:
+            continue
+        inlier_matches = match_arr[inlier_mask].astype("uint32")
+        return (
+            pair_id,
+            result["config"],
+            result["qvec"],
+            result["tvec"],
+            result["E"],
+            result["H"],
+            inlier_matches.tobytes(),
+            n_inliers,
+            len(inlier_matches),
+            False,
+            result["kind"],
+        )
+
+    return (pair_id, None, None, None, None, None, None, 0, 0, False, "too_few_inliers")
 
 def verify_matches_poselib(
     db_path: Path,
@@ -350,9 +515,22 @@ def verify_matches_poselib(
     # ── write results to DB (main process only — SQLite is not thread-safe) ──
     rej_solver_failed   = 0
     rej_too_few_inliers = 0
+    verified_by_kind = {"poselib": 0, "opencv_essential": 0, "homography": 0}
     for result in results_iter:
-        pair_id_r, qvec, tvec, match_bytes, n_inliers, n_rows, is_crash = result
-        if qvec is None:
+        (
+            pair_id_r,
+            config,
+            qvec,
+            tvec,
+            e_blob,
+            h_blob,
+            match_bytes,
+            n_inliers,
+            n_rows,
+            is_crash,
+            kind,
+        ) = result
+        if config is None:
             if is_crash:
                 rej_solver_failed += 1
             else:
@@ -366,13 +544,14 @@ def verify_matches_poselib(
             "VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 pair_id_r, n_rows, 2, match_bytes,
-                CONFIG_CALIBRATED,
-                None, None, None,
+                config,
+                None, e_blob, h_blob,
                 qvec, tvec,
             ),
         )
         pairs_verified += 1
         total_inliers += n_inliers
+        verified_by_kind[kind] = verified_by_kind.get(kind, 0) + 1
 
     rej_no_camera      = pre_rejected["no_camera"]
     rej_too_few_matches = pre_rejected["too_few_matches"]
@@ -382,6 +561,9 @@ def verify_matches_poselib(
 
     elapsed = time.perf_counter() - t0
     print(f"[geometric_verification] Verified: {pairs_verified}  "
+          f"(PoseLib: {verified_by_kind.get('poselib', 0)}, "
+          f"OpenCV-E: {verified_by_kind.get('opencv_essential', 0)}, "
+          f"Homography: {verified_by_kind.get('homography', 0)})  "
           f"Rejected: {pairs_rejected}  Total inliers: {total_inliers}  "
           f"Time: {elapsed:.1f}s")
     if pairs_rejected:
@@ -401,4 +583,7 @@ def verify_matches_poselib(
         "rej_too_few_matches": rej_too_few_matches,
         "rej_solver_failed": rej_solver_failed,
         "rej_too_few_inliers": rej_too_few_inliers,
+        "verified_poselib": verified_by_kind.get("poselib", 0),
+        "verified_opencv_essential": verified_by_kind.get("opencv_essential", 0),
+        "verified_homography": verified_by_kind.get("homography", 0),
     }

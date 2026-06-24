@@ -335,6 +335,68 @@ def test_colmap_mapper_does_not_force_gps_init_pair(tmp_path, monkeypatch):
     assert calls == {"has_init_id1": False, "has_init_id2": False}
 
 
+def test_colmap_mapper_rejects_tiny_component(tmp_path, monkeypatch):
+    """A 5-image island out of a large mapper set must not count as success."""
+    import src.sfm.colmap_mapper as colmap_mapper
+
+    caps = []
+    for i in range(40):
+        cap = make_capture(f"{i:03d}", 16.900 + i * 0.00001, 81.700)
+        rgb = tmp_path / f"{i:03d}.jpg"
+        rgb.write_bytes(b"fake image bytes")
+        cap.rgb = str(rgb)
+        caps.append(cap)
+
+    db_path = tmp_path / "database.db"
+    conn = sqlite3.connect(db_path)
+    conn.execute("CREATE TABLE images (image_id INTEGER PRIMARY KEY, name TEXT)")
+    conn.execute("CREATE TABLE two_view_geometries (pair_id INTEGER PRIMARY KEY, rows INTEGER)")
+    conn.executemany(
+        "INSERT INTO images (image_id, name) VALUES (?, ?)",
+        [(i + 1, f"{i:03d}.jpg") for i in range(40)],
+    )
+    max_image_id = 2147483647
+    conn.executemany(
+        "INSERT INTO two_view_geometries (pair_id, rows) VALUES (?, ?)",
+        [(1 * max_image_id + i, 30) for i in range(2, 40)],
+    )
+    conn.commit()
+    conn.close()
+
+    class FakeOptions:
+        def __init__(self):
+            self.mapper = types.SimpleNamespace(
+                ba_local_num_images=6,
+                filter_max_reproj_error=4.0,
+            )
+            self.ba_global_frames_ratio = 1.1
+            self.use_prior_position = False
+            self.num_threads = 1
+            self.max_num_models = 1
+            self.min_model_size = 10
+            self.image_names = []
+
+    class TinyRecon:
+        num_reg_images = 5
+
+    fake_pycolmap = types.SimpleNamespace(
+        IncrementalPipelineOptions=FakeOptions,
+        pair_id_to_image_pair=lambda pair_id: divmod(pair_id, max_image_id),
+        incremental_mapping=lambda **kwargs: {0: TinyRecon()},
+    )
+    monkeypatch.setitem(sys.modules, "pycolmap", fake_pycolmap)
+
+    result = colmap_mapper.run_colmap_incremental(
+        database_path=str(db_path),
+        image_dir=str(tmp_path),
+        output_dir=str(tmp_path / "sparse"),
+        keyframes=caps,
+        init_pair=None,
+    )
+
+    assert result is None
+
+
 def test_colmap_mapper_uses_canonical_lowercase_image_names(tmp_path, monkeypatch):
     """
     Regression guard for COLMAP reporting `loaded 0`: the mapper image allowlist

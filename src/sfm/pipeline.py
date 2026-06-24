@@ -73,7 +73,7 @@ def run_sfm(
     captures       : List[Capture],
     has_rtk        : bool = False,
     keyframe_interval: int = 3,
-    use_prior_position: bool = True,
+    use_prior_position: bool = False,
 ) -> Optional[object]:
     """
     Full SfM pipeline — Steps 1-7.
@@ -88,6 +88,10 @@ def run_sfm(
         keyframe_interval: 1-in-N images used as keyframes for SfM
                            3 = safe at 80% overlap (default)
                            2 = more conservative, slower SfM
+        use_prior_position:
+                          Enable COLMAP's pose-prior constraints during mapping.
+                          Use only for RTK-quality GPS. Ordinary GPS is aligned
+                          after mapping in Step 7.
 
     Returns:
         pycolmap.Reconstruction with all cameras registered,
