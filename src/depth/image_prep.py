@@ -236,6 +236,7 @@ def _run_interface_colmap(
 
     cmd = [
         binary,
+        "--working-folder", str(Path(output_mvs).parent),
         "--input-file", colmap_sparse_dir,
         "--image-folder", image_dir,
         "--output-file", output_mvs,

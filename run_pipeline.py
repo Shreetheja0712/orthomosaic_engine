@@ -29,7 +29,11 @@ def main():
     parser.add_argument("--gsd",     type=float, default=0.05,
                         help="Target ground sampling distance in metres/pixel (default 0.05 = 5cm)")
     parser.add_argument("--rtk",     action="store_true",
-                        help="Set this flag if your drone has RTK GPS")
+                        help="Force RTK mode (strong priors + GLOMAP). "
+                             "By default the pipeline auto-detects RTK from "
+                             "image EXIF/XMP (drone-dji:RtkFlag or GPS GPSDifferential).")
+    parser.add_argument("--no-rtk",  action="store_true",
+                        help="Force non-RTK mode even if EXIF/XMP indicates RTK.")
     parser.add_argument("--no-gpu",  action="store_true",
                         help="Disable GPU (run on CPU only — much slower)")
     parser.add_argument("--n-neighbors", type=int, default=20,
@@ -67,6 +71,40 @@ def main():
     print("\n=== Stage 1+2: Ingestion & Quality Filter ===")
     stage_start = time.time()
     captures = load_mission(mission_dir)
+
+    # ── RTK detection ─────────────────────────────────────────────────────────
+    if args.rtk and args.no_rtk:
+        print("[pipeline] ERROR: --rtk and --no-rtk are mutually exclusive.")
+        return
+
+    if args.rtk:
+        has_rtk = True
+        print("[pipeline] RTK mode: FORCED ON via --rtk flag.")
+    elif args.no_rtk:
+        has_rtk = False
+        print("[pipeline] RTK mode: FORCED OFF via --no-rtk flag.")
+    else:
+        # Auto-detect from per-capture EXIF/XMP written during ingestion.
+        # Require a supermajority (≥ 80 %) of captures to show RTK Fixed before
+        # treating the whole mission as RTK — a few non-RTK frames at the start
+        # of a flight (while the rover is acquiring a fix) should not downgrade
+        # an otherwise RTK mission.
+        n_total  = len(captures)
+        n_rtk    = sum(1 for c in captures if c.has_rtk)
+        rtk_frac = n_rtk / n_total if n_total else 0.0
+        has_rtk  = rtk_frac >= 0.80
+
+        print(f"\n[pipeline] ── RTK auto-detection ────────────────────────")
+        print(f"[pipeline]  Captures with RTK Fixed EXIF/XMP : {n_rtk}/{n_total} "
+              f"({rtk_frac*100:.0f}%)")
+        if has_rtk:
+            print(f"[pipeline]  Decision : RTK ON  "
+                  f"(≥ 80 % threshold met — using GLOMAP + strong priors)")
+        else:
+            print(f"[pipeline]  Decision : RTK OFF "
+                  f"(< 80 % threshold — using COLMAP + weak GPS priors)")
+        print(f"[pipeline]  Override : pass --rtk or --no-rtk to force.")
+        print(f"[pipeline] ──────────────────────────────────────────────")
 
     # ── Overlap estimation + dynamic SfM parameter selection ─────────────────
     has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
@@ -146,12 +184,12 @@ def main():
             image_dir          = str(Path(mission_dir) / "rgb"),
             output_dir         = str(output_dir / "sparse"),
             captures           = captures,
-            has_rtk            = args.rtk,
+            has_rtk            = has_rtk,
             keyframe_interval  = sfm_keyframe_interval,
             # COLMAP's use_prior_position is brittle with ordinary GPS and can
             # repeatedly discard otherwise valid components when prior alignment
             # fails. Use it only for RTK; normal GPS is applied in final alignment.
-            use_prior_position = args.rtk,
+            use_prior_position = has_rtk,
         )
         if reconstruction is None:
             print("[pipeline] ERROR: SfM failed. Check GPS metadata and image overlap.")
@@ -159,9 +197,9 @@ def main():
         stage_start = print_stage_time("Stage 6+7", stage_start)
     else:
         print(f"\n=== Stage 6+7: SfM — SKIPPED (start-from-stage={start}) ===")
-        reconstruction = _load_reconstruction(output_dir / "sparse" / "colmap")
+        reconstruction = _load_reconstruction(output_dir / "sparse")
         if reconstruction is None:
-            print(f"ERROR: Could not load reconstruction from {output_dir / 'sparse' / 'colmap'}. Run from stage 6 or earlier first.")
+            print(f"ERROR: Could not load reconstruction from {output_dir / 'sparse'}. Run from stage 6 or earlier first.")
             return
         print(f"  Loaded reconstruction: {reconstruction.num_reg_images} registered images")
 
@@ -170,10 +208,11 @@ def main():
     if start <= 8:
         print("\n=== Stage 8: Depth Maps (OpenMVS) ===")
         dmap_paths, mvs_scene = run_depth_pipeline(
-            reconstruction = reconstruction,
-            captures       = captures,
-            output_dir     = str(depth_dir),
-            use_gpu        = use_gpu,
+            reconstruction    = reconstruction,
+            captures          = captures,
+            output_dir        = str(depth_dir),
+            colmap_sparse_dir = str(output_dir / "sparse"),
+            use_gpu           = use_gpu,
         )
         stage_start = print_stage_time("Stage 8", stage_start)
     else:

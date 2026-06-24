@@ -13,6 +13,7 @@ class Capture:
     latitude: Optional[float] = None
     longitude: Optional[float] = None
     altitude: Optional[float] = None
+    has_rtk: bool = False
 
     def is_complete(self) -> bool:
         return all([

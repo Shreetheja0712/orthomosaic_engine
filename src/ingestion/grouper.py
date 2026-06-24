@@ -2,7 +2,7 @@ import os
 import re
 from typing import Optional
 from .capture import Capture
-from .exif_reader import read_gps
+from .exif_reader import read_gps, detect_rtk
 
 
 # ── Pattern 1: existing IMG_* convention ─────────────────────────────────────
@@ -111,11 +111,13 @@ def group_captures(mission_dir: str) -> dict[str, Capture]:
 
         captures[capture_id].rgb = filepath
 
-        # Read GPS from RGB image
+        # Read GPS and RTK status from the RGB image (the only band guaranteed
+        # to carry full EXIF/XMP on all drone models).
         lat, lon, alt = read_gps(filepath)
         captures[capture_id].latitude  = lat
         captures[capture_id].longitude = lon
         captures[capture_id].altitude  = alt
+        captures[capture_id].has_rtk   = detect_rtk(filepath)
 
     # Scan multi/
     for filename in sorted(os.listdir(multi_dir)):
