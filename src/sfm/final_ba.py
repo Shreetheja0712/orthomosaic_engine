@@ -60,7 +60,10 @@ def run_final_bundle_adjustment(reconstruction) -> None:
 
     options = pycolmap.BundleAdjustmentOptions()
     # Keep consistent with incremental step filter
-    options.loss_function_type = pycolmap.LossFunctionType.TRIVIAL
+    if hasattr(options, "loss_function_type") and hasattr(pycolmap, "LossFunctionType"):
+        options.loss_function_type = pycolmap.LossFunctionType.TRIVIAL
+
+    
 
     try:
         pycolmap.bundle_adjustment(reconstruction, options)

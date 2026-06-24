@@ -68,7 +68,9 @@ def main():
     captures = load_mission(mission_dir)
 
     # Detect if GPS is completely missing from EXIF
-    sfm_keyframe_interval = 3
+    # Default keyframe interval set to 1 to ensure dense match graphs.
+    # A value of 3 drops overlap too much on missions with standard 70-80% overlap.
+    sfm_keyframe_interval = 1
     has_any_gps = any(c.latitude is not None and c.longitude is not None for c in captures)
     if not has_any_gps:
         print("\n[pipeline] WARNING: No GPS metadata found in any image EXIF.")
