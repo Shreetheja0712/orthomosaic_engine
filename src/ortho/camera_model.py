@@ -53,7 +53,8 @@ def _rotation_matrix_from_image(image) -> np.ndarray:
     legacy (qvec / Rotation3d-less) pycolmap APIs.
     """
     if hasattr(image, "cam_from_world"):
-        rotation = image.cam_from_world.rotation
+        cfw = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
+        rotation = cfw.rotation
         if hasattr(rotation, "matrix"):
             return np.asarray(rotation.matrix(), dtype=np.float64)
         # Some pycolmap builds expose .quat (x, y, z, w) instead.
@@ -72,7 +73,8 @@ def _rotation_matrix_from_image(image) -> np.ndarray:
 
 def _translation_from_image(image) -> np.ndarray:
     if hasattr(image, "cam_from_world"):
-        return np.asarray(image.cam_from_world.translation, dtype=np.float64)
+        cfw = image.cam_from_world() if callable(image.cam_from_world) else image.cam_from_world
+        return np.asarray(cfw.translation, dtype=np.float64)
     if hasattr(image, "tvec"):
         return np.asarray(image.tvec, dtype=np.float64)
     raise AttributeError(
