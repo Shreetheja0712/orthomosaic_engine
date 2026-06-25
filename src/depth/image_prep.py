@@ -149,19 +149,82 @@ def prepare_openmvs_workspace(
         logger.info("Exported COLMAP sparse model to %s", sparse_dir)
 
     # ------------------------------------------------------------------ #
-    # 3. Run InterfaceCOLMAP to produce the .mvs scene file
+    # 3. Undistort images + camera model — REQUIRED by OpenMVS
+    # ------------------------------------------------------------------ #
+    # InterfaceCOLMAP only supports the PINHOLE camera model. Our camera
+    # is OPENCV (real k1/k2/p1/p2 distortion coefficients), which is a
+    # documented cause of either an explicit "no valid cameras, make sure
+    # they are in PINHOLE model" error or an outright crash with empty
+    # stdout/stderr, depending on the InterfaceCOLMAP build. COLMAP's own
+    # dense-reconstruction workflow always undistorts before any MVS tool
+    # for exactly this reason — we do the same here.
+    undistorted_dir = output_path / "undistorted"
+    _undistort_for_openmvs(colmap_sparse_dir, str(image_dir), str(undistorted_dir))
+    sparse_dir_for_mvs = str(undistorted_dir / "sparse")
+    image_dir_for_mvs = str(undistorted_dir / "images")
+
+    # ------------------------------------------------------------------ #
+    # 4. Run InterfaceCOLMAP to produce the .mvs scene file
     # ------------------------------------------------------------------ #
     mvs_scene_path = str(output_path / "scene.mvs")
 
     _run_interface_colmap(
-        colmap_sparse_dir=colmap_sparse_dir,
-        image_dir=str(image_dir),
+        colmap_sparse_dir=sparse_dir_for_mvs,
+        image_dir=image_dir_for_mvs,
         output_mvs=mvs_scene_path,
         bin_dir=openmvs_bin_dir,
     )
 
     logger.info("OpenMVS scene file written to %s", mvs_scene_path)
     return mvs_scene_path
+
+
+def _undistort_for_openmvs(sparse_dir: str, image_dir: str, undistorted_dir: str) -> None:
+    """
+    Undistort images and convert the camera model to PINHOLE for OpenMVS.
+
+    InterfaceCOLMAP (the COLMAP -> OpenMVS bridge) only supports the
+    PINHOLE camera model. Feeding it our OPENCV (distorted) model directly
+    is a documented cause of "no valid cameras, make sure they are in
+    PINHOLE model" errors, or an outright crash with empty stdout/stderr
+    depending on the InterfaceCOLMAP build/version.
+
+    This mirrors the standard COLMAP -> MVS workflow:
+        pycolmap.undistort_images(undistorted_dir, sparse_dir, image_dir)
+    which reads the (distorted) reconstruction in *sparse_dir* + the
+    original images in *image_dir*, and writes undistorted images plus a
+    PINHOLE-camera reconstruction into:
+        undistorted_dir/images/*.jpg
+        undistorted_dir/sparse/{cameras,images,points3D}.bin
+
+    Parameters
+    ----------
+    sparse_dir : str
+        Directory with the (distorted, OPENCV-model) COLMAP sparse model.
+    image_dir : str
+        Directory with the original (distorted) RGB images.
+    undistorted_dir : str
+        Output directory for the undistorted workspace.
+    """
+    import pycolmap
+
+    Path(undistorted_dir).mkdir(parents=True, exist_ok=True)
+    pycolmap.undistort_images(undistorted_dir, sparse_dir, image_dir)
+
+    # Same OpenMVS-incompatibility workaround as the raw export: COLMAP's
+    # undistorter can still emit rigs.bin/frames.bin alongside the model.
+    undistorted_sparse = Path(undistorted_dir) / "sparse"
+    removed = []
+    for f in ["rigs.bin", "frames.bin", "rigs.txt", "frames.txt"]:
+        fp = undistorted_sparse / f
+        if fp.exists():
+            fp.unlink()
+            removed.append(f)
+
+    logger.info(
+        "Undistorted model (PINHOLE) written to %s (removed: %s)",
+        undistorted_sparse, removed or "none present",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -192,30 +255,42 @@ def _symlink_or_copy(src: str, dst: str) -> None:
         shutil.copy2(src, dst)
 
 
-from .text_export import write_colmap_text
-
 def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -> None:
     """
-    Write COLMAP text model files from a pycolmap.Reconstruction using a custom Python exporter.
-    
+    Write COLMAP model files from a pycolmap.Reconstruction.
+
     OpenMVS InterfaceCOLMAP crashes silently (exit 1) when parsing COLMAP 4.0+
-    binary models due to structural changes like pose_prior. Deleting unsupported
-    files like frames.bin is not enough because images.bin itself changed.
-    
-    We bypass this completely by writing pure legacy text format directly from Python.
+    binary models if it encounters frames.bin and rigs.bin.
+    We write the model and explicitly delete these unsupported files.
     """
-    # 1. Ensure the directory is completely empty
+    if hasattr(reconstruction, "write"):
+        reconstruction.write(sparse_dir)
+    elif hasattr(reconstruction, "write_binary"):
+        reconstruction.write_binary(sparse_dir)
+
+    # OpenMVS workaround: remove unsupported 4.0+ files
     p = Path(sparse_dir)
-    for f in p.iterdir():
-        if f.is_file():
-            f.unlink()
-            
-    # 2. Write custom text format
-    write_colmap_text(reconstruction, sparse_dir)
-    
+    removed = []
+    for f in ["rigs.bin", "frames.bin", "rigs.txt", "frames.txt"]:
+        if (p / f).exists():
+            (p / f).unlink()
+            removed.append(f)
+
+    # Verify the cleanup actually took — if these reappear (e.g. something
+    # else recreated them, or unlink silently failed on some filesystem),
+    # fail loudly here instead of letting InterfaceCOLMAP crash later with
+    # an opaque "exit 1" and empty stdout/stderr.
+    still_present = [f for f in ["rigs.bin", "frames.bin"] if (p / f).exists()]
+    if still_present:
+        raise RuntimeError(
+            f"OpenMVS-incompatible files still present in {sparse_dir} after "
+            f"cleanup: {still_present}. Remove this directory manually and "
+            f"re-run Stage 8."
+        )
+
     logger.debug(
-        "Wrote COLMAP sparse model (OpenMVS-safe custom TEXT) to %s",
-        sparse_dir
+        "Wrote COLMAP sparse model (OpenMVS-safe) to %s (removed: %s)",
+        sparse_dir, removed or "none present",
     )
 
 
