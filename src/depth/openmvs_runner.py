@@ -49,8 +49,9 @@ from __future__ import annotations
 import logging
 import shutil
 import subprocess
+from functools import lru_cache
 from pathlib import Path
-from typing import List
+from typing import List, Set
 
 logger = logging.getLogger(__name__)
 
@@ -185,6 +186,48 @@ def run_openmvs_depth_estimation(
 # Private helpers
 # ---------------------------------------------------------------------------
 
+@lru_cache(maxsize=None)
+def _probe_supported_flags(binary: str) -> Set[str]:
+    """
+    Query DensifyPointCloud --help and return the set of flag names
+    that this specific build supports.
+
+    Result is cached so the subprocess is only launched once per binary
+    path per process lifetime.
+
+    Returns
+    -------
+    Set[str]
+        Flag names found in --help output, e.g.
+        {'min-depth', 'max-depth', 'depth-map-config', 'cuda-device'}.
+        Returns an empty set if --help itself fails (ultra-old build).
+    """
+    import re
+    try:
+        result = subprocess.run(
+            [binary, "--help"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        # --help text goes to stdout or stderr depending on OpenMVS version
+        help_text = result.stdout + result.stderr
+        # Extract all --flag-name tokens from the help text
+        flags = set(re.findall(r"--([a-z][a-z0-9-]+)", help_text))
+        logger.debug(
+            "DensifyPointCloud supported flags probed: %s",
+            ", ".join(sorted(flags)) or "(none detected)",
+        )
+        return flags
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Could not probe DensifyPointCloud --help (%s); "
+            "will use minimal safe command.",
+            exc,
+        )
+        return set()
+
+
 def _build_command(
     binary: str,
     mvs_scene_path: str,
@@ -203,6 +246,12 @@ def _build_command(
     Fusion is done in Stage 9 via a separate DensifyPointCloud call
     with ``--dense-mode 1``.
 
+    Only flags that appear in ``DensifyPointCloud --help`` are included.
+    This prevents the CmdLine parser from calling exit(1) on unknown
+    flags — which was the root cause of the startup crash observed when
+    ``--min-depth`` / ``--max-depth`` / ``--depth-map-config`` are not
+    supported by the installed build.
+
     Parameters
     ----------
     binary : str
@@ -215,38 +264,65 @@ def _build_command(
     num_neighbors : int
     use_gpu : bool
     global_min : float
-        Global depth_min fallback (metres).
+        Global depth_min fallback (metres).  Only passed if the binary
+        supports ``--min-depth``.
     global_max : float
-        Global depth_max fallback (metres).
+        Global depth_max fallback (metres).  Only passed if the binary
+        supports ``--max-depth``.
     config_path : str
-        Path to per-image depth config file (may be empty string if
-        OpenMVS doesn't support it — handled at call site).
+        Path to per-image depth config file.  Only passed if the binary
+        supports ``--depth-map-config``.
 
     Returns
     -------
     List[str]
         Fully assembled command list ready for subprocess.run().
     """
+    supported = _probe_supported_flags(binary)
+
+    # Core flags — these are present in all known OpenMVS versions
     cmd = [
         binary,
         mvs_scene_path,
-        "--dense-mode",      "0",          # estimate only, no fusion
+        "--dense-mode",       "0",               # estimate only, no fusion
         "--resolution-level", str(resolution_level),
-        "--min-resolution",  "640",         # minimum image dimension after downscaling
-        "--number-views",    str(num_neighbors),
-        "--number-views-fuse", "3",         # min views needed for multi-view consistency
-        "--output-dir",      output_dir,
-        "--min-depth",       f"{global_min:.4f}",
-        "--max-depth",       f"{global_max:.4f}",
+        "--min-resolution",   "640",              # minimum image dimension after downscaling
+        "--number-views",     str(num_neighbors),
+        "--number-views-fuse", "3",               # min views needed for multi-view consistency
+        "--output-dir",       output_dir,
     ]
 
+    # Global depth range — only for builds that advertise these flags
+    if "min-depth" in supported and "max-depth" in supported:
+        cmd += [
+            "--min-depth", f"{global_min:.4f}",
+            "--max-depth", f"{global_max:.4f}",
+        ]
+        logger.debug(
+            "Using global depth range: min=%.4f max=%.4f",
+            global_min, global_max,
+        )
+    else:
+        logger.warning(
+            "DensifyPointCloud build does not support --min-depth / --max-depth; "
+            "depth range will not be constrained (OpenMVS default heuristics apply)."
+        )
+
+    # GPU / CPU selection — only for builds that advertise --cuda-device
     if not use_gpu:
-        cmd += ["--cuda-device", "-1"]      # -1 = force CPU
+        if "cuda-device" in supported:
+            cmd += ["--cuda-device", "-1"]        # -1 = force CPU
         logger.warning("GPU disabled — depth estimation will be very slow.")
 
     # Per-image config (OpenMVS ≥ 2.1, may silently ignore on older versions)
     if config_path and Path(config_path).exists():
-        cmd += ["--depth-map-config", config_path]
+        if "depth-map-config" in supported:
+            cmd += ["--depth-map-config", config_path]
+        else:
+            logger.warning(
+                "DensifyPointCloud build does not support --depth-map-config; "
+                "per-image depth range config will be skipped."
+            )
 
     return cmd
 
