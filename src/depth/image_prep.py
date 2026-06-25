@@ -158,10 +158,14 @@ def prepare_openmvs_workspace(
     # stdout/stderr, depending on the InterfaceCOLMAP build. COLMAP's own
     # dense-reconstruction workflow always undistorts before any MVS tool
     # for exactly this reason — we do the same here.
+    #
+    # _undistort_for_openmvs also builds a clean mvs_input/ workspace
+    # (text-format sparse, no rigs/frames files) and returns its path.
+    # InterfaceCOLMAP must receive the workspace ROOT as --input-file
+    # because it appends "/sparse/" internally.
     undistorted_dir = output_path / "undistorted"
-    _undistort_for_openmvs(colmap_sparse_dir, str(image_dir), str(undistorted_dir))
-    sparse_dir_for_mvs = str(undistorted_dir / "sparse")
-    image_dir_for_mvs = str(undistorted_dir / "images")
+    mvs_input_dir = _undistort_for_openmvs(colmap_sparse_dir, str(image_dir), str(undistorted_dir))
+    image_dir_for_mvs = str(Path(mvs_input_dir) / "images")
 
     # ------------------------------------------------------------------ #
     # 4. Run InterfaceCOLMAP to produce the .mvs scene file
@@ -169,7 +173,7 @@ def prepare_openmvs_workspace(
     mvs_scene_path = str(output_path / "scene.mvs")
 
     _run_interface_colmap(
-        colmap_sparse_dir=sparse_dir_for_mvs,
+        colmap_workspace_root=mvs_input_dir,
         image_dir=image_dir_for_mvs,
         output_mvs=mvs_scene_path,
         bin_dir=openmvs_bin_dir,
@@ -179,7 +183,7 @@ def prepare_openmvs_workspace(
     return mvs_scene_path
 
 
-def _undistort_for_openmvs(sparse_dir: str, image_dir: str, undistorted_dir: str) -> None:
+def _undistort_for_openmvs(sparse_dir: str, image_dir: str, undistorted_dir: str) -> str:
     """
     Undistort images and convert the camera model to PINHOLE for OpenMVS.
 
@@ -205,26 +209,94 @@ def _undistort_for_openmvs(sparse_dir: str, image_dir: str, undistorted_dir: str
         Directory with the original (distorted) RGB images.
     undistorted_dir : str
         Output directory for the undistorted workspace.
+
+    Returns
+    -------
+    str
+        Path to the clean ``mvs_input/`` workspace root that should be
+        passed as ``--input-file`` to InterfaceCOLMAP.
     """
     import pycolmap
 
     Path(undistorted_dir).mkdir(parents=True, exist_ok=True)
     pycolmap.undistort_images(undistorted_dir, sparse_dir, image_dir)
 
-    # Same OpenMVS-incompatibility workaround as the raw export: COLMAP's
-    # undistorter can still emit rigs.bin/frames.bin alongside the model.
+    # ------------------------------------------------------------------ #
+    # Convert undistorted binary model to TEXT format for InterfaceCOLMAP
+    # ------------------------------------------------------------------ #
+    # Two bugs combine here with COLMAP 3.9+:
+    #
+    # Bug 1 — rigs/frames: pycolmap.undistort_images() writes rigs.bin and
+    #   frames.bin into undistorted/sparse/ alongside the classic trio.
+    #   InterfaceCOLMAP (built against older OpenMVS) hits an unhandled code
+    #   path and exits 1 silently when these files are present.  Deleting them
+    #   from the binary sparse dir is not sufficient because InterfaceCOLMAP
+    #   cannot read binary format reliably across COLMAP versions anyway.
+    #
+    # Bug 2 — --input-file semantics: InterfaceCOLMAP appends "/sparse/"
+    #   internally to whatever path is passed as --input-file.  The argument
+    #   must therefore be the *workspace root*, not the sparse subdirectory.
+    #   So the correct layout is:
+    #       <mvs_input>/sparse/cameras.txt   ← only the classic 3 files
+    #       <mvs_input>/images/              ← symlink or real dir
+    #   and the call must be:
+    #       --input-file  <mvs_input>        ← workspace root
+    #       --image-folder <mvs_input>/images
+    #
+    # Fix: convert binary → text with colmap model_converter, copy only the
+    # three classic files into a fresh mvs_input/sparse/, and point
+    # InterfaceCOLMAP at mvs_input/ (the workspace root).
+
     undistorted_sparse = Path(undistorted_dir) / "sparse"
-    removed = []
-    for f in ["rigs.bin", "frames.bin", "rigs.txt", "frames.txt"]:
-        fp = undistorted_sparse / f
-        if fp.exists():
-            fp.unlink()
-            removed.append(f)
+
+    # Step A: convert binary sparse to text (colmap model_converter requires
+    # the output directory to already exist).
+    sparse_txt = Path(undistorted_dir) / "sparse_txt"
+    sparse_txt.mkdir(parents=True, exist_ok=True)
+
+    colmap_bin = shutil.which("colmap") or "colmap"
+    convert_cmd = [
+        colmap_bin, "model_converter",
+        "--input_path",  str(undistorted_sparse),
+        "--output_path", str(sparse_txt),
+        "--output_type", "TXT",
+    ]
+    logger.info("Converting undistorted binary model to TXT: %s", " ".join(convert_cmd))
+    conv_result = subprocess.run(convert_cmd, capture_output=True, text=True)
+    if conv_result.returncode != 0:
+        raise RuntimeError(
+            f"colmap model_converter failed (exit {conv_result.returncode}).\n"
+            f"stdout:\n{conv_result.stdout}\n"
+            f"stderr:\n{conv_result.stderr}"
+        )
+
+    # Step B: build a clean mvs_input/ workspace with ONLY the classic 3 files
+    # in its sparse/ subdirectory — no rigs.txt, no frames.txt.
+    mvs_input = Path(undistorted_dir) / "mvs_input"
+    mvs_input_sparse = mvs_input / "sparse"
+    if mvs_input.exists():
+        shutil.rmtree(mvs_input)
+    mvs_input_sparse.mkdir(parents=True)
+
+    for fname in ("cameras.txt", "images.txt", "points3D.txt"):
+        src_f = sparse_txt / fname
+        if not src_f.exists():
+            raise RuntimeError(
+                f"colmap model_converter did not produce expected file: {src_f}"
+            )
+        shutil.copy2(str(src_f), str(mvs_input_sparse / fname))
+
+    # Step C: symlink images into the workspace so InterfaceCOLMAP can find them
+    # via its default <workspace>/images/ path.
+    mvs_input_images = mvs_input / "images"
+    mvs_input_images.symlink_to(Path(undistorted_dir) / "images")
 
     logger.info(
-        "Undistorted model (PINHOLE) written to %s (removed: %s)",
-        undistorted_sparse, removed or "none present",
+        "Built clean InterfaceCOLMAP workspace at %s "
+        "(sparse: cameras.txt/images.txt/points3D.txt only, no rigs/frames)",
+        mvs_input,
     )
+    return str(mvs_input)
 
 
 # ---------------------------------------------------------------------------
@@ -296,7 +368,7 @@ def _export_reconstruction_to_colmap_safe_mvs(reconstruction, sparse_dir: str) -
 
 
 def _run_interface_colmap(
-    colmap_sparse_dir: str,
+    colmap_workspace_root: str,
     image_dir: str,
     output_mvs: str,
     bin_dir: str = "",
@@ -310,8 +382,11 @@ def _run_interface_colmap(
 
     Parameters
     ----------
-    colmap_sparse_dir : str
-        Directory containing cameras.bin / images.bin / points3D.bin.
+    colmap_workspace_root : str
+        Workspace root whose ``sparse/`` subdirectory contains
+        cameras.txt / images.txt / points3D.txt (text format, no rigs/frames).
+        InterfaceCOLMAP appends ``/sparse/`` internally, so this must be
+        the parent directory, not the sparse folder itself.
     image_dir : str
         Directory containing the flat image files.
     output_mvs : str
@@ -329,7 +404,7 @@ def _run_interface_colmap(
     cmd = [
         binary,
         "--working-folder", str(Path(output_mvs).parent),
-        "--input-file", colmap_sparse_dir,
+        "--input-file", colmap_workspace_root,
         "--image-folder", image_dir,
         "--output-file", output_mvs,
     ]
