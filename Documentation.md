@@ -533,6 +533,10 @@ IMG_{frame}_{capture_id}_{band}.{ext}
 - `IMG_XXXX_000_REG.tiff`
 - `IMG_XXXX_000_NIR.tiff`
 
+sudo apt-get update
+sudo apt-get install libimage-exiftool-perl
+
+
 ### EXIF requirements on RGB images
 
 Each RGB `.jpg` **must** have GPS data embedded in its EXIF:
