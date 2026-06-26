@@ -83,10 +83,41 @@ def find_seamlines(
     masks_in = [valid_mask(img) for img in images]
     images_f32 = [img.astype(np.float32) for img in images]
 
-    seam_finder = cv2.detail_GraphCutSeamFinder("COST_COLOR")
-    result = seam_finder.find(images_f32, corners, [m.copy() for m in masks_in])
+    # DOWN-SCALE images and masks for seam finding.
+    # GraphCut is O(N^3) and will hang for hours on 156 full-resolution images.
+    # We downscale to 10%, find seams, and upscale the binary masks back.
+    # The blocky edges of upscaled seams will be smoothed out by MultiBandBlender.
+    scale = 0.1
+    images_f32_small = []
+    masks_small = []
+    corners_small = []
 
-    seam_masks = [_to_ndarray(m).astype(np.uint8) for m in result]
+    for img, mask, corner in zip(images_f32, masks_in, corners):
+        h, w = img.shape[:2]
+        new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+        
+        img_s = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        mask_s = cv2.resize(mask, (new_w, new_h), interpolation=cv2.INTER_NEAREST)
+        
+        images_f32_small.append(img_s)
+        masks_small.append(mask_s)
+        corners_small.append((int(corner[0] * scale), int(corner[1] * scale)))
+
+    logger.info("find_seamlines: starting GraphCut on %dx downscaled images...", int(1/scale))
+    seam_finder = cv2.detail_GraphCutSeamFinder("COST_COLOR")
+    result_small = seam_finder.find(images_f32_small, corners_small, masks_small)
+    logger.info("find_seamlines: GraphCut finished")
+
+    # UPSCALE seam masks back to original resolution
+    seam_masks = []
+    for orig_mask, mask_small in zip(masks_in, result_small):
+        mask_small = _to_ndarray(mask_small).astype(np.uint8)
+        h, w = orig_mask.shape[:2]
+        
+        mask_up = cv2.resize(mask_small, (w, h), interpolation=cv2.INTER_NEAREST)
+        # Ensure we don't enable pixels that were invalid in the original full-res mask
+        mask_final = cv2.bitwise_and(mask_up, orig_mask)
+        seam_masks.append(mask_final)
 
     logger.info("find_seamlines: computed seam masks for %d tiles", len(seam_masks))
     return SeamlineSet(masks=seam_masks, corners=corners)
